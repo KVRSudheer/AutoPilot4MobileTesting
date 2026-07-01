@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mobile Test Autopilot — B-roll Contact Sheet</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700;800&family=Fira+Code:wght@400&display=swap');
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#050A14;--accent:#FA4616;--accent-l:#FF7A4F;--blue-l:#60A5FA;
+    --t1:#F0F4F8;--t2:#94A3B8;--t3:#64748B;--border:rgba(255,255,255,.07);
+    --display:'Outfit',system-ui,sans-serif;--mono:'Fira Code',monospace}
+  body{background:var(--bg);color:var(--t1);font-family:var(--display);min-height:100vh;
+    background-image:radial-gradient(1000px 500px at 80% -10%,rgba(250,70,22,.08),transparent 60%),
+      radial-gradient(800px 400px at 5% 0%,rgba(59,130,246,.07),transparent 55%);padding:0 0 80px}
+  header{display:flex;align-items:center;justify-content:space-between;padding:26px 40px;border-bottom:1px solid var(--border)}
+  .lr{display:flex;align-items:center;gap:12px}
+  .lr svg{height:26px;opacity:.85}.lr .sep{width:1px;height:15px;background:rgba(255,255,255,.14)}
+  .lr .lbl{font-size:12px;color:var(--t2);letter-spacing:.5px}
+  header .meta{font-family:var(--mono);font-size:11px;color:var(--t3);letter-spacing:1.5px;text-transform:uppercase}
+  .intro{padding:40px 40px 24px;max-width:900px}
+  .intro h1{font-size:34px;font-weight:700;letter-spacing:-.5px}
+  .intro h1 b{color:var(--accent)}
+  .intro p{color:var(--t2);margin-top:10px;font-weight:300;line-height:1.6;font-size:15px;max-width:70ch}
+  .intro .hint{font-family:var(--mono);font-size:12px;color:var(--t3);margin-top:14px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(384px,1fr));gap:22px;padding:20px 40px}
+  .card{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:rgba(255,255,255,.02);
+    text-decoration:none;color:inherit;transition:border-color .25s,transform .25s;display:block}
+  .card:hover{border-color:rgba(250,70,22,.5);transform:translateY(-3px)}
+  .thumb{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;background:#050A14;border-bottom:1px solid var(--border)}
+  .thumb iframe{position:absolute;top:0;left:0;width:1280px;height:720px;border:0;
+    transform:scale(.30);transform-origin:top left;pointer-events:none}
+  .thumb .open{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    background:rgba(5,10,20,.0);opacity:0;transition:opacity .25s;font-size:13px;font-weight:600;letter-spacing:.5px}
+  .card:hover .thumb .open{opacity:1;background:rgba(5,10,20,.45)}
+  .card:hover .thumb .open span{padding:9px 18px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#e63d12);box-shadow:0 10px 28px rgba(250,70,22,.4)}
+  .cap{padding:14px 16px;display:flex;align-items:flex-start;gap:12px}
+  .num{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--accent-l);
+    background:rgba(250,70,22,.1);border:1px solid rgba(250,70,22,.22);border-radius:7px;padding:4px 9px;flex:none}
+  .cap .tx h3{font-size:15px;font-weight:600;line-height:1.3}
+  .cap .tx .ti{font-family:var(--mono);font-size:11px;color:var(--t3);letter-spacing:.6px;margin-top:3px}
+</style>
+</head>
+<body>
+<header>
+  <div class="lr"><svg viewBox="0 0 94 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M0 0H32V32H0V0ZM28.6848 28.6848V3.3152H3.3152V28.6912H28.6912L28.6848 28.6848ZM6.1952 8.256V17.952C6.1952 22.3872 8.6272 24.9792 12.7424 24.9792C16.8576 24.9792 19.4176 22.336 19.4176 17.952V8.256H16.1024V17.952C16.1024 20.4608 15.0336 21.8496 12.8192 21.8496C10.6048 21.8496 9.504 20.3776 9.504 17.952V8.256H6.1888H6.1952ZM23.6928 10.2336C24.8704 10.2336 25.7216 9.4336 25.7216 8.256C25.7216 7.0784 24.864 6.2272 23.6928 6.2272C22.5216 6.2272 21.664 7.0528 21.664 8.256C21.664 9.4592 22.5216 10.2336 23.6928 10.2336ZM22.0352 11.808V24.8192H25.3504V11.808H22.0352ZM41.8304 19.4752C45.4336 19.4752 47.7888 17.3632 47.7888 13.8112C47.7888 10.2592 45.4912 8.256 41.8304 8.256H35.5264V24.8192H38.8416V19.4752H41.8304ZM41.4848 16.832H38.8416V10.9312H41.4848C43.3792 10.9312 44.4224 12 44.4224 13.8176C44.4224 15.7696 43.3792 16.8384 41.4848 16.8384V16.832ZM48.9088 18.3296C48.9088 22.2016 51.392 24.9792 54.9184 24.9792C57.0048 24.9792 58.3616 24.2304 59.136 22.976V24.8192H62.4512V11.808H59.136V13.8368C58.336 12.4992 56.9472 11.648 54.9184 11.648C51.3408 11.648 48.9088 14.4768 48.9088 18.3232V18.3296ZM59.136 18.3296C59.136 20.6016 57.7216 22.0672 55.6928 22.0672C53.4464 22.0672 52.2752 20.4928 52.2752 18.3296C52.2752 16.0064 53.5872 14.5344 55.6928 14.5344C57.7984 14.5344 59.136 16.0832 59.136 18.3296ZM70.8096 21.9904C69.5296 21.9904 69.1776 21.4272 69.1776 20.2816V14.6176H72.0896V11.8144H69.1776V8.2624H65.8624V11.8144H64.3136V14.6176H65.8624V20.256C65.8624 23.328 67.2256 24.8256 70.3744 24.8256H72.1088V21.9968H70.7968L70.8096 21.9904ZM77.2736 13.632V7.4624H73.9584V24.8256H77.2736V17.9328C77.2736 15.7184 78.4512 14.3808 80.3968 14.3808C82.3424 14.3808 83.36 15.6608 83.36 17.6384V24.8256H86.6752V17.2672C86.6752 13.8496 84.2688 11.6288 81.1968 11.6288C79.2192 11.6288 78.016 12.3776 77.2672 13.632H77.2736Z" fill="white"/><path d="M89.8495 12.8316C87.8015 12.8316 86.3999 11.4044 86.3999 9.41403C86.3999 7.42363 87.8463 6.01562 89.8495 6.01562C91.8527 6.01562 93.2799 7.38523 93.2799 9.41403C93.2799 11.4428 91.8719 12.8316 89.8495 12.8316ZM89.8495 6.61723C88.1343 6.61723 87.0463 7.69243 87.0463 9.40763C87.0463 11.1228 88.1919 12.1788 89.8495 12.1788C91.5071 12.1788 92.6399 11.0652 92.6399 9.40763C92.6399 7.75003 91.5519 6.61723 89.8495 6.61723ZM90.6303 9.94523L91.3535 11.2956H90.4959L89.8111 10.054H89.2671V11.2956H88.4927V7.44923H89.9711C90.8095 7.44923 91.4303 7.94203 91.4303 8.73563C91.4303 9.32443 91.1167 9.74683 90.6303 9.94523ZM89.2671 9.43963H89.8751C90.3231 9.43963 90.6303 9.19003 90.6303 8.73563C90.6303 8.31963 90.3231 8.07003 89.8751 8.07003H89.2671V9.43963Z" fill="white"/></svg>
+    <div class="sep"></div><span class="lbl">Mobile Test Autopilot</span></div>
+  <div class="meta">B-roll contact sheet · 16 scenes</div>
+</header>
+
+<div class="intro">
+  <h1>Demo B-rolls — <b>one animation per scene</b></h1>
+  <p>Sixteen self-contained HTML animations, one per scene of the 4-minute demo, in the UiPath agentic look. Each is built to be recorded full-screen at 1920×1080. Previews below loop live.</p>
+  <p class="hint">↳ click any card to open it full-screen · best recorded at 1080p · refresh a card to replay its sequence</p>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<script>
+  const scenes=[
+    ["01","act0_cold-open","Cold open — selector by hand","Act 0 · 0:00–0:08"],
+    ["02","act0_problem","From scratch, every time","Act 0 · 0:08–0:22"],
+    ["03","act0_stakes","60 hours — the cost","Act 0 · 0:22–0:35"],
+    ["04","act1_reveal","Product reveal","Act 1 · 0:35–0:50"],
+    ["05","act1_inputs","Any input","Act 1 · 0:50–1:05"],
+    ["06","act1_precision","Precision + Test Manager","Act 1 · 1:05–1:20"],
+    ["07","act2_generate","One click — Generate","Act 2 · 1:20–1:35"],
+    ["08","act2_results","Live results table","Act 2 · 1:35–1:55"],
+    ["09","act2_review","Human in the loop","Act 2 · 1:55–2:10"],
+    ["10","act3_why-code","Cases aren't enough","Act 3 · 2:10–2:25"],
+    ["11","act3_codegen",".xaml assembles itself","Act 3 · 2:25–2:45"],
+    ["12","act3_studio","0 errors in Studio","Act 3 · 2:45–3:00"],
+    ["13","act4_time","Hours to minutes","Act 4 · 3:00–3:18"],
+    ["14","act4_skillset","Expertise on tap","Act 4 · 3:18–3:35"],
+    ["15","act4_value","Compounding value","Act 4 · 3:35–3:48"],
+    ["16","act4_close","Describe. Ship. Thank you.","Act 4 · 3:48–4:00"]
+  ];
+  const grid=document.getElementById('grid');
+  scenes.forEach(([n,file,title,ti])=>{
+    const href=n+"_"+file+".html";
+    const a=document.createElement('a');
+    a.className='card';a.href=href;a.target='_blank';
+    a.innerHTML=`<div class="thumb"><iframe src="${href}" loading="lazy" scrolling="no" tabindex="-1"></iframe>
+      <div class="open"><span>Open full-screen ↗</span></div></div>
+      <div class="cap"><span class="num">${n}</span><div class="tx"><h3>${title}</h3><div class="ti">${ti}</div></div></div>`;
+    grid.appendChild(a);
+  });
+</script>
+</body>
+</html>

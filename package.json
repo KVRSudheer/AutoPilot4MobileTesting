@@ -1,0 +1,22 @@
+{
+  "name": "uipath-mobile-test-autopilot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Turn plain-English mobile test cases into runnable UiPath Mobile Automation workflows with real selectors, driven on BrowserStack / Sauce Labs and planned by the UiPath LLM Gateway.",
+  "type": "module",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c magenta,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm --workspace server run build && npm --workspace client run build",
+    "start": "npm --workspace server run start",
+    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

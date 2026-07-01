@@ -1,0 +1,194 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: toggled by adding `.dark` on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  font-family: "Poppins", "Aptos", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-weight: 300;
+
+  --uipath-orange: #fa4616;
+  --uipath-orange-soft: #fff1ec;
+  --uipath-navy: #182128;
+  --uipath-slate: #1e6482;
+  --uipath-text: #182128;
+  --uipath-muted: #667880;
+  --uipath-blue: #0ba2b3;
+  --uipath-bright-blue: #cceefe;
+  --uipath-dark-blue: #1e6482;
+  --uipath-offset-orange: #a33200;
+  --uipath-grey: #d9d9d9;
+
+  background-color: #ffffff;
+  color: #182128;
+}
+
+html.dark {
+  color-scheme: dark;
+  background-color: #0d141a;
+  color: #e6edf1;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: inherit;
+  background:
+    radial-gradient(circle at top left, rgba(250, 70, 22, 0.14), transparent 34%),
+    radial-gradient(circle at top right, rgba(204, 238, 254, 0.9), transparent 30%),
+    linear-gradient(180deg, #ffffff 0%, #f9fdff 55%, #fff8f4 100%);
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+html.dark body {
+  background:
+    radial-gradient(circle at top left, rgba(250, 70, 22, 0.16), transparent 34%),
+    radial-gradient(circle at top right, rgba(11, 162, 179, 0.16), transparent 32%),
+    linear-gradient(180deg, #0d141a 0%, #0b1117 55%, #11100d 100%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background-color: rgba(250, 70, 22, 0.88);
+  color: #ffffff;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+  h1,
+  h2,
+  h3 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  /* Clear clickability affordance: a pointer on anything interactive, and a
+     not-allowed cursor on disabled controls. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  a[href] {
+    cursor: pointer;
+  }
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+}
+
+@layer utilities {
+  .panel-shadow {
+    box-shadow:
+      0 1px 2px rgba(24, 33, 40, 0.05),
+      0 18px 48px rgba(24, 33, 40, 0.08);
+  }
+  .dark .panel-shadow {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 18px 48px rgba(0, 0, 0, 0.45);
+  }
+  .soft-shadow {
+    box-shadow: 0 10px 30px rgba(24, 33, 40, 0.07);
+  }
+  .dark .soft-shadow {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+  .metric-grid {
+    background-image:
+      linear-gradient(rgba(217, 217, 217, 0.35) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(217, 217, 217, 0.35) 1px, transparent 1px);
+    background-position: center;
+    background-size: 18px 18px;
+  }
+  .dark .metric-grid {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  }
+  .agent-glow {
+    box-shadow:
+      0 0 0 1px rgba(250, 70, 22, 0.18),
+      0 16px 40px rgba(250, 70, 22, 0.12);
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(24, 33, 40, 0.18);
+    border-radius: 999px;
+  }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(250, 70, 22, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(250, 70, 22, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(250, 70, 22, 0);
+  }
+}
+.live-dot {
+  animation: pulse-ring 1.8s infinite;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-in-up {
+  animation: fade-in-up 0.35s ease both;
+}
+
+/* UiPath-style orbiting atom loader */
+@keyframes atom-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes atom-core {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.25);
+    opacity: 0.75;
+  }
+}
+.atom-core {
+  animation: atom-core 1.8s ease-in-out infinite;
+}
