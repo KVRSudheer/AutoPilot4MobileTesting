@@ -16,14 +16,15 @@ export interface SelectorCatalogEntry {
 // A clean JSON action log - exact regardless of XAML namespace nuances.
 export function buildActionLog(session: SessionState) {
   return {
-    generatedBy: "UiPath Mobile Test Autopilot",
+    generatedBy: "UiPath Browser Test Autopilot",
     session: {
       id: session.id,
       title: session.title,
       mode: session.mode,
       platform: session.platform,
       provider: session.provider,
-      device: session.deviceLabel,
+      browser: session.browserLabel || session.deviceLabel,
+      startUrl: session.browser?.startUrl,
       app: session.appLabel,
       llmModel: session.llmModel,
       llmLive: session.llmLive,
@@ -41,14 +42,16 @@ export function buildActionLog(session: SessionState) {
       runtimeStrategy: s.selector?.strategy,
       runtimeLocator: s.selector?.locator,
       capturedText: s.capturedText,
-      deviceOutcome: s.outcome,
+      browserOutcome: s.outcome,
       element: s.element
         ? {
             class: s.element.className,
             text: s.element.text,
-            contentDesc: s.element.contentDesc,
-            resourceId: s.element.resourceId,
-            accessibilityId: s.element.accessibilityId,
+            htmlId: s.element.htmlId,
+            name: s.element.name,
+            testId: s.element.testId,
+            ariaLabel: s.element.ariaLabel,
+            placeholder: s.element.placeholder,
           }
         : undefined,
     })),

@@ -8,7 +8,6 @@ import { BatchStep } from "./components/wizard/BatchStep";
 import { createBatch, createSession, getDefaults, type BatchInfo } from "./lib/api";
 import type {
   AppConfig,
-  ConnectionTarget,
   DeviceConfig,
   FarmCredentials,
   RunStatus,
@@ -28,7 +27,7 @@ export interface FormState {
 }
 
 // A launched test case. Each run streams independently in the background and
-// is either a single-device session or a parallel batch of device-sessions.
+// is either a single browser session or a parallel batch of browser sessions.
 interface RunInstance {
   id: string; // session id (single) or batch id (batch)
   title: string;
@@ -36,8 +35,8 @@ interface RunInstance {
   createdAt: number;
   session?: SessionState;
   batch?: BatchInfo;
-  // The exact requests that launched this run (one per device) - kept so the
-  // run can be re-run on all or specific devices.
+  // The exact requests that launched this run (one per browser environment) -
+  // kept so the run can be re-run on all or specific environments.
   requests: SessionRequest[];
 }
 
@@ -57,8 +56,15 @@ const DEFAULT_FORM: FormState = {
     bearerToken: "",
     llmModel: "gpt-4o-mini-2024-07-18",
   },
-  farm: { provider: "browserstack", username: "", accessKey: "", region: "us-west-1", hubUrl: "" },
-  device: { platform: "Android", deviceName: "", osVersion: "", connectionTarget: "app" },
+  farm: { provider: "local" },
+  device: {
+    platform: "Desktop",
+    deviceName: "Local Edge",
+    osVersion: "Windows",
+    connectionTarget: "browser",
+    browser: "edge",
+    headless: false,
+  },
   title: "",
   app: { ...DEFAULT_APP },
   testSteps: [""],
@@ -68,7 +74,7 @@ export default function App() {
   const [defaults, setDefaults] = useState<ServerDefaults | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [view, setView] = useState<View>("connect");
-  // Devices collected on the Connect screen; selected/run on the compose screen.
+  // Browser environments collected on Connect; selected/run on Compose.
   const [devicePool, setDevicePool] = useState<DeviceConfig[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
   const [creating, setCreating] = useState(false);
@@ -78,7 +84,7 @@ export default function App() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runStatuses, setRunStatuses] = useState<Record<string, RunStatus>>({});
   // Persisted connection state so it survives navigating away from Connect.
-  const [connState, setConnState] = useState<ConnState>({ validation: null, catalog: null });
+  const [connState, setConnState] = useState<ConnState>({ validation: null });
 
   useEffect(() => {
     void getDefaults()
@@ -95,7 +101,13 @@ export default function App() {
             llmModel: d.uipath.llmModel || prev.uipath.llmModel,
             mode: d.uipath.hasBearer && !d.uipath.hasClientCredentials ? "bearer" : prev.uipath.mode,
           },
-          farm: { ...prev.farm, provider: d.farm.provider || prev.farm.provider },
+          device: {
+            ...prev.device,
+            browser: d.browser.defaultBrowser || prev.device.browser,
+            headless: d.browser.headless,
+            viewportWidth: d.browser.headless ? d.browser.viewportWidth || prev.device.viewportWidth : undefined,
+            viewportHeight: d.browser.headless ? d.browser.viewportHeight || prev.device.viewportHeight : undefined,
+          },
         }));
       })
       .catch(() => setDefaults(null));
@@ -114,31 +126,7 @@ export default function App() {
     title: form.title.trim() || undefined,
   });
 
-  // The connection target (native app vs mobile browser) is a TEST-CASE level
-  // choice - one test case can't mix native and web (different steps/selectors).
-  // So it applies to every device in the run: set it on the template AND
-  // re-stamp the whole pool.
-  const setTarget = (target: ConnectionTarget, browser?: string) => {
-    const browserFor = (platform: DeviceConfig["platform"], prev?: string) =>
-      target === "browser" && platform === "Android" ? (browser ?? prev ?? "chrome") : undefined;
-    setForm((prev) => ({
-      ...prev,
-      device: {
-        ...prev.device,
-        connectionTarget: target,
-        browser: browserFor(prev.device.platform, prev.device.browser),
-      },
-    }));
-    setDevicePool((p) =>
-      p.map((dv) => ({
-        ...dv,
-        connectionTarget: target,
-        browser: browserFor(dv.platform, dv.browser),
-      })),
-    );
-  };
-
-  // --- Connect screen: build the device run pool -----------------------------
+  // --- Connect screen: build the browser run pool ----------------------------
   const addDevice = () => setDevicePool((p) => [...p, { ...form.device }]);
   const removeDevice = (i: number) => {
     setDevicePool((p) => p.filter((_, idx) => idx !== i));
@@ -146,18 +134,18 @@ export default function App() {
   };
 
   const goCompose = () => {
-    // Default to all devices only on first entry; preserve an existing choice
+    // Default to all browser environments only on first entry; preserve choice
     // when re-opening compose (e.g. after peeking at a running run).
     setSelected((s) => (s.length ? s : devicePool.map((_, i) => i)));
     setView("compose");
   };
 
-  // --- Compose screen: choose devices for this test case ---------------------
+  // --- Compose screen: choose browser environments for this test case --------
   const toggleSelected = (i: number) =>
     setSelected((s) => (s.includes(i) ? s.filter((x) => x !== i) : [...s, i]));
   const setAllSelected = (all: boolean) => setSelected(all ? devicePool.map((_, i) => i) : []);
 
-  // Clear the per-test-case fields (keep the workspace: creds + device pool).
+  // Clear the per-test-case fields (keep workspace creds + browser pool).
   const resetCompose = () => {
     setForm((prev) => ({ ...prev, title: "", app: { ...DEFAULT_APP }, testSteps: [""] }));
     setSelected(devicePool.map((_, i) => i));
@@ -205,13 +193,13 @@ export default function App() {
   };
 
   const runSelected = async () => {
-    const devices = selected.map((i) => devicePool[i]).filter(Boolean);
-    if (!devices.length) return;
-    const created = await launch(devices.map(buildRequest), form.title.trim());
+    const browsers = selected.map((i) => devicePool[i]).filter(Boolean);
+    if (!browsers.length) return;
+    const created = await launch(browsers.map(buildRequest), form.title.trim());
     if (created) resetCompose();
   };
 
-  // Re-run an existing run's exact requests - all devices, or a subset.
+  // Re-run an existing run's exact requests - all browsers, or a subset.
   const rerun = (reqs: SessionRequest[]) => {
     if (reqs.length) void launch(reqs, reqs[0]?.title?.trim() || "Re-run");
   };
@@ -268,7 +256,6 @@ export default function App() {
           devicePool={devicePool}
           onAddDevice={addDevice}
           onRemoveDevice={removeDevice}
-          onSetTarget={setTarget}
         />
       </div>
 

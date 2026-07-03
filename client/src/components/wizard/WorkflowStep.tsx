@@ -100,25 +100,16 @@ export function WorkflowStep({
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
           <Stat label="Steps" value={`${catalog.length}`} />
           <Stat label="Selectors captured" value={`${withSelectors}`} />
-          <Stat label="Target" value={session.target === "browser" ? "Mobile web" : session.platform} />
+          <Stat label="Target" value={session.browserLabel || "Desktop web"} />
         </div>
       </Card>
 
       <div className="flex items-start gap-2 rounded-2xl border border-[#cceefe] dark:border-[#1d3947] bg-[#f3fbff] dark:bg-[#0e2129] px-4 py-3 text-sm text-[#1E6482] dark:text-[#6db3d6]">
         <Info className="mt-0.5 h-4 w-4 shrink-0" />
-        {session.target === "browser" ? (
-          <span>
-            Selectors use UiPath web (<code>&lt;html/&gt;&lt;webctrl/&gt;</code>) format and are exact.
-            The <code>.xaml</code> uses UI Automation web activities - confirm the package version in
-            Studio before importing.
-          </span>
-        ) : (
-          <span>
-            Selectors use UiPath mobile (<code>&lt;mbl/&gt;</code>) format and are exact. The{" "}
-            <code>.xaml</code> targets <code>UiPath.Mobile.Automation.Activities</code> - confirm the
-            package version in Studio before importing.
-          </span>
-        )}
+        <span>
+          Selectors use UiPath web (<code>&lt;html/&gt;&lt;webctrl/&gt;</code>) format and are exact.
+          Confirm the UI Automation package version in Studio before importing the generated workflow.
+        </span>
       </div>
 
       <Card className="p-6">

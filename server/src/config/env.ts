@@ -24,19 +24,17 @@ export const env = {
   },
 
   farm: {
-    provider: read("DEVICE_FARM_PROVIDER", "browserstack"),
-    browserstackUser: read("BROWSERSTACK_USERNAME"),
-    browserstackKey: read("BROWSERSTACK_ACCESS_KEY"),
-    sauceUser: read("SAUCE_USERNAME"),
-    sauceKey: read("SAUCE_ACCESS_KEY"),
-    sauceRegion: read("SAUCE_REGION", "us-west-1"),
-    // Real-device provisioning can be slow/queued; allow a generous timeout.
-    connectTimeoutMs: Number(read("FARM_CONNECT_TIMEOUT_MS", "300000")),
-    // Max concurrent device sessions in a parallel batch. 0 (default) = no
-    // client-side cap: every run in the batch starts at once. Set a positive
-    // number only if you need to stay under a farm's concurrent-session limit.
+    provider: "local" as const,
+    defaultBrowser: read("BROWSER_NAME", "edge"),
+    headless: read("BROWSER_HEADLESS", "false").toLowerCase() === "true",
+    viewportWidth: Math.max(640, Number(read("BROWSER_VIEWPORT_WIDTH", "1440")) || 1440),
+    viewportHeight: Math.max(480, Number(read("BROWSER_VIEWPORT_HEIGHT", "900")) || 900),
+    // Local browser startup can be slow on cold machines; allow a generous timeout.
+    connectTimeoutMs: Number(read("BROWSER_CONNECT_TIMEOUT_MS", "300000")),
+    // Max concurrent browser sessions in a parallel batch. 0 (default) = no
+    // client-side cap: every run in the batch starts at once.
     maxParallel: Math.max(0, Number(read("MAX_PARALLEL_SESSIONS", "0")) || 0),
-    // Live device-screen streaming: poll a screenshot every N ms during a run
+    // Live browser-screen streaming: poll a screenshot every N ms during a run
     // so the UI shows a near-live feed (not just per-step snapshots). 0 = off.
     liveFrameMs: Math.max(0, Number(read("LIVE_FRAME_MS", "1500")) || 0),
   },

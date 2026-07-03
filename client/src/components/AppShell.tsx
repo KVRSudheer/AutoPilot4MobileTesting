@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Moon, Plus, Settings2, Smartphone, Sparkles, Sun } from "lucide-react";
+import { Monitor, Moon, Plus, Settings2, Sparkles, Sun } from "lucide-react";
 import { useTheme } from "../lib/theme";
 import type { RunStatus } from "../lib/types";
 
@@ -48,7 +48,7 @@ export function AppShell({
               </span>
               <div className="leading-tight">
                 <p className="text-sm font-semibold text-[#182128] dark:text-[#e6edf1]">
-                  Mobile Test Autopilot
+                  Browser Test Autopilot
                 </p>
                 <p className="text-[11px] text-[#667880] dark:text-[#9aabb4]">
                   Agentic workflow authoring for UiPath
@@ -68,7 +68,7 @@ export function AppShell({
 
       <footer className="w-full px-5 pb-8 lg:px-10 2xl:px-16">
         <p className="text-center text-xs text-[#9aa7ad] dark:text-[#71808a]">
-          Powered by the UiPath SDK · LLM Gateway · BrowserStack &amp; Sauce Labs · Appium
+          Powered by the UiPath SDK - LLM Gateway - Chrome &amp; Edge desktop automation
         </p>
       </footer>
     </div>
@@ -136,7 +136,7 @@ function WorkspaceNav({
                   aria-hidden
                 />
               ) : (
-                <Smartphone className="h-3.5 w-3.5 shrink-0" />
+                <Monitor className="h-3.5 w-3.5 shrink-0" />
               )
             ) : null}
             <span className="max-w-[160px] truncate">{item.label}</span>

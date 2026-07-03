@@ -1,7 +1,4 @@
 import type {
-  DeviceCatalog,
-  FarmApp,
-  FarmCredentials,
   SelectorCatalogEntry,
   ServerDefaults,
   SessionRequest,
@@ -78,43 +75,6 @@ export async function getCatalog(
   sessionId: string,
 ): Promise<{ catalog: SelectorCatalogEntry[]; actionLog: unknown }> {
   return json(await fetch(`/api/sessions/${sessionId}/catalog`));
-}
-
-export async function listFarmDevices(creds: FarmCredentials): Promise<DeviceCatalog> {
-  const res = await fetch("/api/farm/devices", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(creds),
-  });
-  const data = await json<{ devices: DeviceCatalog }>(res);
-  return data.devices;
-}
-
-export async function listFarmApps(creds: FarmCredentials): Promise<FarmApp[]> {
-  const res = await fetch("/api/farm/apps", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(creds),
-  });
-  const data = await json<{ apps: FarmApp[] }>(res);
-  return data.apps;
-}
-
-export async function uploadFarmApp(
-  creds: FarmCredentials,
-  source: { file?: File; url?: string },
-): Promise<FarmApp> {
-  const form = new FormData();
-  form.append("provider", creds.provider);
-  if (creds.username) form.append("username", creds.username);
-  if (creds.accessKey) form.append("accessKey", creds.accessKey);
-  if (creds.region) form.append("region", creds.region);
-  if (source.file) form.append("file", source.file);
-  if (source.url) form.append("url", source.url);
-
-  const res = await fetch("/api/farm/upload", { method: "POST", body: form });
-  const data = await json<{ app: FarmApp }>(res);
-  return data.app;
 }
 
 export function workflowXamlUrl(sessionId: string): string {

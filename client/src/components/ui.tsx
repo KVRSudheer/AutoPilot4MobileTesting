@@ -168,13 +168,13 @@ export function Tabs<T extends string>({
   );
 }
 
-export function DeviceFrame({
+export function BrowserFrame({
   src,
   caption,
-  placeholder = "Waiting for device…",
+  placeholder = "Waiting for browser...",
   busy = false,
-  maxW = 440,
-  maxH = 600,
+  maxW = 760,
+  maxH = 480,
 }: {
   src?: string;
   caption?: string;
@@ -183,12 +183,10 @@ export function DeviceFrame({
   maxW?: number;
   maxH?: number;
 }) {
-  // The frame conforms to the device's real screen resolution: we read the
-  // screenshot's natural dimensions and size the frame to that aspect ratio,
-  // capped so phones aren't too tall and tablets aren't too small (dynamic).
+  // The frame conforms to the browser screenshot's real resolution.
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
-  const aspectNum = dims ? dims.w / dims.h : 9 / 19.5;
-  const aspect = dims ? `${dims.w} / ${dims.h}` : "9 / 19.5";
+  const aspectNum = dims ? dims.w / dims.h : 16 / 10;
+  const aspect = dims ? `${dims.w} / ${dims.h}` : "16 / 10";
 
   // Fit the screen within a max width and max height; whichever binds wins.
   let displayW = maxW;
@@ -199,17 +197,17 @@ export function DeviceFrame({
   return (
     <div className="flex w-full flex-col items-center gap-2">
       <div
-        className="max-w-full rounded-[1.6rem] bg-[#182128] soft-shadow"
-        style={{ width: displayW, borderWidth: borderW, borderColor: "#182128", borderStyle: "solid" }}
+        className="max-w-full rounded-xl bg-[#182128] soft-shadow"
+        style={{ width: displayW, borderWidth: Math.max(4, Math.round(borderW / 2)), borderColor: "#182128", borderStyle: "solid" }}
       >
         <div
-          className="w-full overflow-hidden rounded-[1.3rem] bg-[#0b0f12]"
+          className="w-full overflow-hidden rounded-lg bg-[#0b0f12]"
           style={{ aspectRatio: aspect }}
         >
           {src ? (
             <img
               src={src}
-              alt="device screen"
+              alt="browser screen"
               onLoad={(e) => {
                 const t = e.currentTarget;
                 if (t.naturalWidth && t.naturalHeight) setDims({ w: t.naturalWidth, h: t.naturalHeight });

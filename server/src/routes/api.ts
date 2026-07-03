@@ -1,16 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { EventEmitter } from "node:events";
-import multer from "multer";
 import { env } from "../config/env.js";
-import type {
-  FarmCredentials,
-  FarmProvider,
-  Platform,
-  RunEvent,
-  SessionRequest,
-  SessionState,
-  UiPathAuthMode,
-} from "../types.js";
+import type { FarmCredentials, Platform, RunEvent, SessionRequest, SessionState, UiPathAuthMode } from "../types.js";
 import {
   getBatch,
   getSession,
@@ -26,13 +17,8 @@ import { createSession } from "../automation/session.js";
 import { runAutomation } from "../automation/orchestrator.js";
 import { buildXaml } from "../workflow/xamlBuilder.js";
 import { buildActionLog, buildSelectorCatalog } from "../workflow/actionLog.js";
-import { listFarmApps, uploadFarmApp } from "../farms/appStorage.js";
-import { listFarmDevices } from "../farms/devices.js";
 
 export const api = Router();
-
-// App binaries can be large; allow up to 500MB in memory for forwarding.
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
 // --- Per-session event runner (buffered SSE) --------------------------------
 class SessionRunner {
@@ -163,60 +149,49 @@ function mergeWithEnvDefaults(req: SessionRequest): SessionRequest {
   };
 }
 
-// Resolve farm credentials from a request body, falling back to env defaults.
-function resolveFarmCreds(input: Partial<FarmCredentials> | undefined): FarmCredentials {
-  const provider = (input?.provider || env.farm.provider) as FarmProvider;
+// Resolve browser provider settings from a request body, falling back to env defaults.
+function resolveFarmCreds(_input: Partial<FarmCredentials> | undefined): FarmCredentials {
   return {
-    provider,
-    region: input?.region || env.farm.sauceRegion,
-    hubUrl: input?.hubUrl,
-    username:
-      input?.username ||
-      (provider === "browserstack" ? env.farm.browserstackUser : env.farm.sauceUser),
-    accessKey:
-      input?.accessKey ||
-      (provider === "browserstack" ? env.farm.browserstackKey : env.farm.sauceKey),
+    provider: "local",
   };
 }
 
 function buildInitialState(id: string, req: SessionRequest): SessionState {
-  const platform = (req.device?.platform || "Android") as Platform;
-  const target = req.device?.connectionTarget ?? "app";
+  const platform = (req.device?.platform || "Desktop") as Platform;
+  const target = req.device?.connectionTarget ?? "browser";
   const provider = req.farm.provider;
-  const deviceLabel = `${req.device?.deviceName || "Sample Device"} · ${platform} ${req.device?.osVersion || ""}`.trim();
-  const nativeBuildId = platform === "Android" ? req.app?.android?.buildId : req.app?.ios?.buildId;
-  const appLabel =
-    target === "browser"
-      ? req.app?.startUrl || "ACME Shopping (sample web)"
-      : req.app?.appName || nativeBuildId || "ACME Shopping (sample)";
+  const browserName = (req.device?.browser || env.farm.defaultBrowser) as "edge" | "chrome";
+  const viewportWidth = req.device?.viewportWidth || env.farm.viewportWidth;
+  const viewportHeight = req.device?.viewportHeight || env.farm.viewportHeight;
+  const isHeadless = req.device?.headless ?? env.farm.headless;
+  const browserTitle = browserName === "edge" ? "Microsoft Edge" : "Google Chrome";
+  const browserLabel = isHeadless ? `${browserTitle} ${viewportWidth}x${viewportHeight}` : `${browserTitle} maximized`;
+  const environmentLabel =
+    req.device?.deviceName?.trim() ||
+    `${browserName === "edge" ? "Microsoft Edge" : "Google Chrome"} desktop`;
+  const appLabel = req.app?.startUrl || "ACME Shopping (sample web)";
   const title = (req.title || "").trim() || appLabel;
 
-  const mobile = {
-    platformName: platform,
-    platformVersion: req.device?.osVersion || "",
-    deviceName: req.device?.deviceName || "",
-    automationName: platform === "Android" ? "UiAutomator2" : "XCUITest",
+  const browser = {
+    browserName,
     provider,
-    app: target === "browser" ? undefined : nativeBuildId || undefined,
-    startUrl: target === "browser" ? req.app?.startUrl || undefined : undefined,
-    browserName:
-      target === "browser"
-        ? platform === "iOS"
-          ? "safari"
-          : req.device?.browser || "chrome"
-        : undefined,
+    startUrl: req.app?.startUrl || undefined,
+    viewportWidth,
+    viewportHeight,
+    headless: isHeadless,
   };
 
   return {
     id,
     title,
-    mobile,
-    mode: "simulated",
+    browser,
+    mode: "live",
     status: "created",
     platform,
     target,
     provider,
-    deviceLabel,
+    deviceLabel: environmentLabel,
+    browserLabel,
     appLabel,
     llmModel: req.uipath.llmModel || env.uipath.llmModel,
     llmLive: false,
@@ -230,16 +205,16 @@ function buildInitialState(id: string, req: SessionRequest): SessionState {
   };
 }
 
-// Make a safe, readable, UNIQUE filename stem (e.g. "Login_smoke_Pixel_8_a1b2c3").
-// The device + short id keep parallel-batch runs (which share a title) from
+// Make a safe, readable, UNIQUE filename stem (e.g. "Login_smoke_Edge_a1b2c3").
+// The browser environment + short id keep parallel-batch runs (which share a title) from
 // overwriting each other when downloaded.
 function slug(s: string): string {
   return (s || "").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
 }
 function fileStem(state: SessionState): string {
-  const title = slug(state.title) || "MobileTest";
-  const device = slug((state.deviceLabel || "").split("·")[0]);
-  return [title, device, state.id.slice(-6)].filter(Boolean).join("_");
+  const title = slug(state.title) || "BrowserTest";
+  const browser = slug(state.browserLabel || state.deviceLabel || "browser");
+  return [title, browser, state.id.slice(-6)].filter(Boolean).join("_");
 }
 
 function sameHost(a: string, b: string): boolean {
@@ -248,6 +223,10 @@ function sameHost(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeStartUrl(url: string): string {
+  return /^[a-z][a-z\d+.-]*:\/\//i.test(url) ? url : `https://${url}`;
 }
 
 // --- Routes -----------------------------------------------------------------
@@ -268,11 +247,12 @@ api.get("/defaults", (_req, res) => {
       hasClientCredentials: Boolean(env.uipath.clientId && env.uipath.clientSecret),
       hasBearer: Boolean(env.uipath.bearerToken),
     },
-    farm: {
+    browser: {
       provider: env.farm.provider,
-      sauceRegion: env.farm.sauceRegion,
-      hasBrowserstack: Boolean(env.farm.browserstackUser && env.farm.browserstackKey),
-      hasSauce: Boolean(env.farm.sauceUser && env.farm.sauceKey),
+      defaultBrowser: env.farm.defaultBrowser,
+      headless: env.farm.headless,
+      viewportWidth: env.farm.viewportWidth,
+      viewportHeight: env.farm.viewportHeight,
     },
   });
 });
@@ -325,54 +305,6 @@ api.post("/uipath/models", async (req: Request, res: Response) => {
     res.json({ models });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "Failed to list models." });
-  }
-});
-
-// List available devices (OS -> device -> versions) for the chosen farm.
-api.post("/farm/devices", async (req: Request, res: Response) => {
-  try {
-    const creds = resolveFarmCreds(req.body as Partial<FarmCredentials>);
-    const devices = await listFarmDevices(creds);
-    res.json({ devices });
-  } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : "Failed to list devices." });
-  }
-});
-
-// List apps already uploaded to the chosen device farm.
-api.post("/farm/apps", async (req: Request, res: Response) => {
-  try {
-    const creds = resolveFarmCreds(req.body as Partial<FarmCredentials>);
-    if (!creds.username || !creds.accessKey) {
-      return res.status(400).json({ error: "Provide device-farm username and access key." });
-    }
-    const apps = await listFarmApps(creds);
-    res.json({ apps });
-  } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : "Failed to list apps." });
-  }
-});
-
-// Upload an app (multipart file OR JSON { url }) to the chosen farm.
-api.post("/farm/upload", upload.single("file"), async (req: Request, res: Response) => {
-  try {
-    const body = req.body as Partial<FarmCredentials> & { url?: string; customId?: string };
-    const creds = resolveFarmCreds(body);
-    if (!creds.username || !creds.accessKey) {
-      return res.status(400).json({ error: "Provide device-farm username and access key." });
-    }
-    const file = (req as Request & { file?: { buffer: Buffer; originalname: string } }).file;
-    if (!file && !body.url) {
-      return res.status(400).json({ error: "Attach a file or provide a public URL." });
-    }
-    const app = await uploadFarmApp(creds, {
-      file: file ? { buffer: file.buffer, filename: file.originalname } : undefined,
-      url: body.url,
-      customId: body.customId,
-    });
-    res.json({ app });
-  } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : "Upload failed." });
   }
 });
 
@@ -522,7 +454,7 @@ api.post("/batches", (req: Request, res: Response) => {
   const batchId = newBatchId();
   saveBatch({ id: batchId, runIds, createdAt: Date.now() });
   batchRunners.set(batchId, new BatchRunner(runIds));
-  // 0 = no cap: run every device at once.
+  // 0 = no cap: run every browser environment at once.
   const effectiveCap = env.farm.maxParallel > 0 ? env.farm.maxParallel : runIds.length;
   res.status(201).json({ batchId, runIds, sessions, maxParallel: effectiveCap });
 });
@@ -583,9 +515,9 @@ async function executeRun(
   state.status = "connecting";
   saveSession(state);
   emit({ type: "session", session: state });
-  emit({ type: "log", level: "info", message: "Provisioning device session…", at: Date.now() });
+  emit({ type: "log", level: "info", message: "Starting browser automation session...", at: Date.now() });
 
-  // 1) Resolve UiPath auth (optional - simulated/heuristic planner if absent).
+  // 1) Resolve UiPath auth (heuristic planner is used if LLM Gateway is unavailable).
   let auth = null as Awaited<ReturnType<typeof resolveUiPathToken>> | null;
   if (isUiPathConfigured(request.uipath)) {
     try {
@@ -599,40 +531,50 @@ async function executeRun(
     emit({ type: "log", level: "info", message: "No UiPath credentials provided; using the built-in heuristic planner.", at: Date.now() });
   }
 
-  // 2) Create the device session (live farm or simulated).
-  const { driver, mode } = await createSession({
-    creds: request.farm,
-    device: request.device,
-    app: request.app,
-  });
+  // 2) Create the local desktop browser session.
+  let created: Awaited<ReturnType<typeof createSession>>;
+  try {
+    created = await createSession({
+      device: request.device,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    state.status = "error";
+    state.error = message;
+    saveSession(state);
+    emit({ type: "log", level: "error", message: `Could not start the local browser: ${message}`, at: Date.now() });
+    emit({ type: "session", session: state });
+    emit({ type: "error", message });
+    return;
+  }
+  const { driver, mode } = created;
   state.mode = mode;
   setDriver(state.id, driver);
   emit({
     type: "log",
     level: "info",
-    message:
-      mode === "live"
-        ? `Live session started on ${state.provider} (${state.deviceLabel}).`
-        : "No device-farm credentials - running the bundled simulated session.",
+    message: `Local browser session started (${state.browserLabel || state.deviceLabel}).`,
     at: Date.now(),
   });
+  const initialFrame = await driver.takeScreenshot().catch(() => "");
+  if (initialFrame) emit({ type: "frame", image: initialFrame, at: Date.now() });
 
-  // 2b) Browser target: open the start URL before automating - logged,
-  // verified against the page we actually landed on, and retried once.
-  if (mode === "live" && state.target === "browser") {
-    const url = request.app.startUrl?.trim();
+  // 2b) Open the start URL before automating - logged, verified against the
+  // page we actually landed on, and retried once.
+  if (state.target === "browser") {
+    const url = normalizeStartUrl(request.app.startUrl?.trim() || "");
     if (!url) {
       emit({
         type: "log",
         level: "warn",
-        message: "No start URL provided - the browser will stay on its home page.",
+        message: "No start URL provided - the browser will stay on its current page.",
         at: Date.now(),
       });
     } else {
       emit({
         type: "log",
         level: "info",
-        message: `Opening ${url} in ${state.platform === "iOS" ? "Safari" : "the device browser"}…`,
+        message: `Opening ${url} in ${state.browserLabel || "the desktop browser"}...`,
         at: Date.now(),
       });
       let landed = "";

@@ -4,7 +4,7 @@ import type { SessionState } from "./types.js";
 // demo / single-operator tool. Swap for Redis if you need multi-instance.
 interface StoredSession {
   state: SessionState;
-  // populated only for live sessions; opaque webdriverio Browser handle
+  // populated only for live sessions; opaque browser automation handle
   driver?: unknown;
 }
 

@@ -1,8 +1,8 @@
 {
-  "name": "uipath-mobile-test-autopilot",
+  "name": "uipath-browser-test-autopilot",
   "version": "1.0.0",
   "private": true,
-  "description": "Turn plain-English mobile test cases into runnable UiPath Mobile Automation workflows with real selectors, driven on BrowserStack / Sauce Labs and planned by the UiPath LLM Gateway.",
+  "description": "Turn plain-English desktop browser test cases into runnable UiPath workflows with web selectors, driven in Chrome or Edge and planned by the UiPath LLM Gateway.",
   "type": "module",
   "workspaces": [
     "client",

@@ -1,9 +1,10 @@
 // Mirror of server/src/types.ts (kept in sync manually across workspaces).
 
-export type Platform = "Android" | "iOS";
-export type FarmProvider = "browserstack" | "saucelabs" | "custom";
+export type Platform = "Desktop";
+export type BrowserName = "edge" | "chrome";
+export type FarmProvider = "local";
 export type UiPathAuthMode = "clientCredentials" | "bearer";
-export type ConnectionTarget = "app" | "browser";
+export type ConnectionTarget = "browser";
 
 export interface UiPathAuthConfig {
   mode: UiPathAuthMode;
@@ -19,10 +20,6 @@ export interface UiPathAuthConfig {
 
 export interface FarmCredentials {
   provider: FarmProvider;
-  username?: string;
-  accessKey?: string;
-  region?: string;
-  hubUrl?: string;
 }
 
 export interface DeviceConfig {
@@ -30,25 +27,14 @@ export interface DeviceConfig {
   deviceName: string;
   osVersion: string;
   connectionTarget?: ConnectionTarget;
-  browser?: string;
+  browser?: BrowserName;
+  headless?: boolean;
+  viewportWidth?: number;
+  viewportHeight?: number;
 }
 
-export interface AndroidBuild {
-  buildId: string; // apk/aab reference: bs://… or storage:…
-  appPackage?: string;
-  appActivity?: string;
-}
-export interface IosBuild {
-  buildId: string; // ipa reference: bs://… or storage:…
-  bundleId?: string;
-}
-
-// App under test = a property of the test case: one build per platform (shared
-// across all devices of that platform) + one browser URL (shared).
 export interface AppConfig {
   appName?: string;
-  android?: AndroidBuild;
-  ios?: IosBuild;
   startUrl?: string;
 }
 
@@ -61,23 +47,27 @@ export interface SessionRequest {
   title?: string;
 }
 
-export type SessionMode = "live" | "simulated";
+export type SessionMode = "live";
 export type StepStatus = "pending" | "running" | "passed" | "needs-attention" | "failed";
-export type ActionType = "tap" | "setText" | "swipe" | "pressKey" | "getText" | "assertExists";
+export type ActionType =
+  | "click"
+  | "tap"
+  | "setText"
+  | "swipe"
+  | "pressKey"
+  | "getText"
+  | "assertExists"
+  | "closeBrowser";
 export type SwipeDirection = "up" | "down" | "left" | "right";
 
 export interface UiElement {
   index: number;
   platform: Platform;
-  kind?: "native" | "web";
+  kind?: "web";
   className: string;
   text?: string;
-  contentDesc?: string;
-  resourceId?: string;
-  accessibilityId?: string;
   name?: string;
   value?: string;
-  bounds?: string;
   clickable?: boolean;
   enabled?: boolean;
   focused?: boolean;
@@ -90,14 +80,33 @@ export interface UiElement {
   href?: string;
   role?: string;
   cssPath?: string;
+  pageTitle?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
 }
 
-export interface MobileSelector {
+export interface UiPathAnchorSelector {
+  label: string;
+  selector: string;
+  targetSelector?: string;
+  targetLocator?: string;
+  relation: "left" | "right" | "above" | "below" | "near";
+  distance: number;
+  uiPathValidated?: boolean;
+  uiPathValidationReason?: string;
+}
+
+export interface WebSelector {
   platform: Platform;
-  kind: "mobile" | "web";
+  kind: "web";
   mbl: string;
-  strategy: "accessibility id" | "id" | "-android uiautomator" | "xpath" | "css";
+  strategy: "css" | "xpath";
   locator: string;
+  anchors?: UiPathAnchorSelector[];
+  uiPathValidated?: boolean;
+  uiPathValidationReason?: string;
 }
 
 export interface PlannedAction {
@@ -117,12 +126,18 @@ export interface ActionOutcome {
   durationMs: number;
 }
 
+export interface RuntimePopupAction {
+  label: string;
+  tag: string;
+  pageTitle?: string;
+}
+
 export interface StepResult {
   index: number;
   description: string;
   status: StepStatus;
   action?: PlannedAction;
-  selector?: MobileSelector;
+  selector?: WebSelector;
   element?: UiElement;
   reason?: string;
   message?: string;
@@ -131,31 +146,33 @@ export interface StepResult {
   beforeScreenshot?: string;
   afterScreenshot?: string;
   elementShot?: string;
+  popupActionsBefore?: RuntimePopupAction[];
+  popupActionsAfter?: RuntimePopupAction[];
   startedAt?: number;
   finishedAt?: number;
 }
 
-export interface MobileConnectionInfo {
-  platformName: Platform;
-  platformVersion: string;
-  deviceName: string;
-  automationName: string;
+export interface BrowserConnectionInfo {
+  browserName: BrowserName;
   provider: FarmProvider;
-  app?: string;
   startUrl?: string;
-  browserName?: string;
+  viewportWidth: number;
+  viewportHeight: number;
+  headless?: boolean;
+  remoteUrl?: string;
 }
 
 export interface SessionState {
   id: string;
   title: string;
-  mobile?: MobileConnectionInfo;
+  browser?: BrowserConnectionInfo;
   mode: SessionMode;
   status: "created" | "connecting" | "running" | "completed" | "error";
   platform: Platform;
   target: ConnectionTarget;
   provider: FarmProvider;
   deviceLabel: string;
+  browserLabel?: string;
   appLabel: string;
   llmModel: string;
   llmLive: boolean;
@@ -183,11 +200,12 @@ export interface ServerDefaults {
     hasClientCredentials: boolean;
     hasBearer: boolean;
   };
-  farm: {
+  browser: {
     provider: FarmProvider;
-    sauceRegion: string;
-    hasBrowserstack: boolean;
-    hasSauce: boolean;
+    defaultBrowser: BrowserName;
+    headless: boolean;
+    viewportWidth: number;
+    viewportHeight: number;
   };
 }
 
@@ -197,25 +215,11 @@ export interface LogLine {
   at: number;
 }
 
-// Live, rolled-up status a run reports to the workspace nav.
 export interface RunStatus {
   state: "connecting" | "running" | "done" | "error";
   passed: number;
   attention: number;
   total: number;
-}
-
-export interface FarmApp {
-  appId: string;
-  name: string;
-  customId?: string;
-  uploadedAt?: string;
-  platform?: Platform;
-}
-
-export interface DeviceCatalog {
-  Android: Record<string, string[]>;
-  iOS: Record<string, string[]>;
 }
 
 export interface SelectorCatalogEntry {

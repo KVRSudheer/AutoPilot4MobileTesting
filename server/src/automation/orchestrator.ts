@@ -1,13 +1,14 @@
 import type {
-  MobileSelector,
   PlannedAction,
   RunEvent,
+  RuntimePopupAction,
   SessionState,
   StepResult,
   UiElement,
+  WebSelector,
 } from "../types.js";
-import type { DeviceDriver } from "./driver.js";
-import { buildSelector } from "../workflow/selectors.js";
+import type { BrowserDriver } from "./driver.js";
+import { buildAnchorSelectors, buildAnchoredSelectorCandidates, buildSelector, buildSelectorCandidates } from "../workflow/selectors.js";
 import { planActionHeuristic, planActionWithLlm, verifyAssertion } from "../uipath/planner.js";
 import type { ResolvedToken } from "../uipath/auth.js";
 import { saveSession } from "../store.js";
@@ -20,14 +21,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Poll the device screen on an interval and emit it as a live frame, so the UI
+// Poll the browser screen on an interval and emit it as a live frame, so the UI
 // shows a near-live feed rather than only per-step snapshots. Single-flight
 // (never overlaps an in-flight command) and best-effort (skips errors). Returns
 // a stop function.
-function startLiveFrames(
-  driver: DeviceDriver,
-  emit: (event: RunEvent) => void,
-): () => void {
+function startLiveFrames(driver: BrowserDriver, emit: (event: RunEvent) => void): () => void {
   const intervalMs = env.farm.liveFrameMs;
   if (!intervalMs) return () => undefined;
   let busy = false;
@@ -51,9 +49,56 @@ function startLiveFrames(
   };
 }
 
+function countLabel(count: number): string {
+  return `${count} runtime popup${count === 1 ? "" : "s"}`;
+}
+
+function popupActionKey(action: RuntimePopupAction): string {
+  return [action.pageTitle ?? "", action.tag ?? "", action.label ?? ""]
+    .map((value) => value.trim().toLowerCase().replace(/\s+/g, " "))
+    .join("|");
+}
+
+function recordPopupActions(
+  step: StepResult,
+  actions: RuntimePopupAction[],
+  timing: "before" | "after",
+  recordedPopupKeys: Set<string>,
+  emit: (event: RunEvent) => void,
+): void {
+  const uniqueActions = actions.filter((action) => {
+    const key = popupActionKey(action);
+    if (recordedPopupKeys.has(key)) return false;
+    recordedPopupKeys.add(key);
+    return true;
+  });
+  if (!uniqueActions.length) return;
+  if (timing === "before") {
+    step.popupActionsBefore = [...(step.popupActionsBefore ?? []), ...uniqueActions];
+  } else {
+    step.popupActionsAfter = [...(step.popupActionsAfter ?? []), ...uniqueActions];
+  }
+  emit({
+    type: "log",
+    level: "info",
+    message: `Cleared ${countLabel(uniqueActions.length)} ${timing} step ${step.index + 1}: ${uniqueActions
+      .map((p) => `"${p.label}"`)
+      .join(", ")}.`,
+    at: Date.now(),
+  });
+}
+
+function isBrowserCloseStep(description: string): boolean {
+  return /\b(close|quit|exit)\s+(the\s+)?(browser|chrome|edge|tab)\b/i.test(description);
+}
+
+function browserCloseRequested(session: SessionState): boolean {
+  return session.steps.some((step) => isBrowserCloseStep(step.description));
+}
+
 interface RunArgs {
   session: SessionState;
-  driver: DeviceDriver;
+  driver: BrowserDriver;
   auth: ResolvedToken | null;
   llmModel: string;
   emit: (event: RunEvent) => void;
@@ -68,10 +113,13 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
 
   // Stream a near-live screen feed alongside the step run.
   const stopFrames = startLiveFrames(driver, emit);
+  const recordedPopupKeys = new Set<string>();
   try {
   for (let i = 0; i < session.steps.length; i += 1) {
     const step = session.steps[i];
     session.currentStep = i;
+    const preStepCleared = await driver.clearInterruptions().catch(() => []);
+    recordPopupActions(step, preStepCleared, "before", recordedPopupKeys, emit);
     step.status = "running";
     step.startedAt = Date.now();
     emit({ type: "step", step });
@@ -79,13 +127,16 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
     emit({ type: "log", level: "info", message: `▶ Step ${i + 1}: ${step.description}`, at: Date.now() });
 
     try {
-      await runStep({ step, driver, auth, llmModel, session, emit });
+      await runStep({ step, driver, auth, llmModel, session, recordedPopupKeys, emit });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       step.status = "failed";
       step.message = message;
       emit({ type: "log", level: "error", message: `Step ${i + 1} failed: ${message}`, at: Date.now() });
     }
+
+    const postStepCleared = await driver.clearInterruptions().catch(() => []);
+    recordPopupActions(step, postStepCleared, "after", recordedPopupKeys, emit);
 
     step.finishedAt = Date.now();
     emit({ type: "step", step });
@@ -96,13 +147,15 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
     const detail =
       step.action?.actionType === "setText"
         ? `typed "${step.action.text ?? ""}"`
-        : step.action?.actionType ?? "";
-    const target = step.selector?.mbl ? ` → ${step.selector.mbl}` : "";
+        : step.action?.actionType === "tap"
+          ? "click"
+          : step.action?.actionType ?? "";
+    const target = step.selector?.mbl ? ` -> ${step.selector.mbl}` : "";
     const captured = step.capturedText ? ` (captured: "${step.capturedText}")` : "";
     const note = step.message ? ` - ${step.message}` : "";
-    // Surface whether the device accepted + applied the action.
-    const device = step.outcome
-      ? ` · device: ${step.outcome.dispatched ? "accepted" : "rejected"}, ${step.outcome.effect}`
+    // Surface whether the browser accepted and applied the action.
+    const browser = step.outcome
+      ? ` - browser: ${step.outcome.dispatched ? "accepted" : "rejected"}, ${step.outcome.effect}`
       : "";
     const finalStatus: string = step.status;
     const level: "info" | "warn" | "error" =
@@ -110,7 +163,7 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
     emit({
       type: "log",
       level,
-      message: `Step ${i + 1} ${step.status}: ${detail}${target}${captured}${device}${note}`.trim(),
+      message: `Step ${i + 1} ${step.status}: ${detail}${target}${captured}${browser}${note}`.trim(),
       at: Date.now(),
     });
 
@@ -125,8 +178,19 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
     stopFrames();
   }
 
+  const closeRequested = browserCloseRequested(session);
   try {
-    await driver.quit();
+    if (session.browser?.headless || closeRequested) {
+      await driver.quit();
+    } else {
+      await driver.detach();
+      emit({
+        type: "log",
+        level: "info",
+        message: "Browser left open after the run. Add a testcase step such as 'close the browser' if you want it closed automatically.",
+        at: Date.now(),
+      });
+    }
   } catch {
     /* ignore */
   }
@@ -136,15 +200,38 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
 
 async function runStep(ctx: {
   step: StepResult;
-  driver: DeviceDriver;
+  driver: BrowserDriver;
   auth: ResolvedToken | null;
   llmModel: string;
   session: SessionState;
+  recordedPopupKeys: Set<string>;
   emit: (event: RunEvent) => void;
 }): Promise<void> {
-  const { step, driver, auth, llmModel, session, emit } = ctx;
+  const { step, driver, auth, llmModel, session, recordedPopupKeys, emit } = ctx;
 
   step.beforeScreenshot = await driver.takeScreenshot();
+  recordPopupActions(step, await driver.clearInterruptions().catch(() => []), "before", recordedPopupKeys, emit);
+
+  if (isBrowserCloseStep(step.description)) {
+    const t0 = Date.now();
+    step.action = {
+      actionType: "closeBrowser",
+      targetIndex: -1,
+      reason: "The testcase explicitly asks to close the browser.",
+      confidence: 1,
+    };
+    step.reason = step.action.reason;
+    step.status = "passed";
+    step.outcome = {
+      dispatched: true,
+      effect: "unverified",
+      detail: "Browser close requested by the testcase; the browser will close after the run completes.",
+      durationMs: Date.now() - t0,
+    };
+    step.afterScreenshot = step.beforeScreenshot;
+    emit({ type: "step", step });
+    return;
+  }
 
   // Plan a single action against the given elements (LLM, else heuristic).
   const planOnce = async (els: UiElement[]): Promise<PlannedAction> => {
@@ -172,6 +259,7 @@ async function runStep(ctx: {
   };
 
   let elements = await driver.captureElements();
+  recordPopupActions(step, await driver.clearInterruptions().catch(() => []), "before", recordedPopupKeys, emit);
   let action = await planOnce(elements);
 
   // --- Resolve the step's target ------------------------------------------
@@ -220,6 +308,10 @@ async function runStep(ctx: {
     action = await planOnce(elements);
   }
 
+  if (isClickAction(action)) {
+    action = promoteClickableTarget(action, elements);
+  }
+
   step.action = action;
   step.reason = action.reason;
   emit({ type: "step", step });
@@ -255,7 +347,7 @@ async function runStep(ctx: {
           : undefined;
       if (confEl) {
         step.element = confEl;
-        step.selector = buildSelector(confEl);
+        step.selector = await validatedSelectorFor(driver, confEl, elements, session, step, emit);
         const shot = await driver.captureElementShot(step.selector);
         if (shot) step.elementShot = shot;
       }
@@ -302,13 +394,13 @@ async function runStep(ctx: {
       step.afterScreenshot = await driver.takeScreenshot();
       return;
     }
-    const selector = buildSelector(target);
+    const validatedSelector = await validatedSelectorFor(driver, target, elements, session, step, emit);
     step.element = target;
-    step.selector = selector;
+    step.selector = validatedSelector;
     // Capture a screenshot cropped to just this element (the "field" image).
-    const shot = await driver.captureElementShot(selector);
+    const shot = await driver.captureElementShot(validatedSelector);
     if (shot) step.elementShot = shot;
-    await executeAction(driver, action, selector, step);
+    await executeAction(driver, action, validatedSelector, step);
     step.afterScreenshot = await driver.takeScreenshot();
     return;
   }
@@ -324,9 +416,6 @@ function hasIdentifier(el: UiElement): boolean {
   const has = (s?: string) => Boolean(s && s.trim());
   return (
     has(el.text) ||
-    has(el.contentDesc) ||
-    has(el.resourceId) ||
-    has(el.accessibilityId) ||
     has(el.name) ||
     has(el.htmlId) ||
     has(el.testId) ||
@@ -337,11 +426,180 @@ function hasIdentifier(el: UiElement): boolean {
 
 function isTargeted(action: PlannedAction): boolean {
   return (
+    action.actionType === "click" ||
     action.actionType === "tap" ||
     action.actionType === "setText" ||
     action.actionType === "getText" ||
     action.actionType === "assertExists"
   );
+}
+
+async function validatedSelectorFor(
+  driver: BrowserDriver,
+  target: UiElement,
+  elements: UiElement[],
+  session: SessionState,
+  step: StepResult,
+  emit: (event: RunEvent) => void,
+): Promise<WebSelector> {
+  const anchoredCandidates = buildAnchoredSelectorCandidates(target, elements, session.browser?.browserName);
+  const directCandidates = buildSelectorCandidates(target, session.browser?.browserName);
+  const hasDirectUiPathCandidate = directCandidates.some((candidate) => candidate.uiPathValidated !== false);
+  const candidates = hasDirectUiPathCandidate ? [...directCandidates, ...anchoredCandidates] : [...anchoredCandidates, ...directCandidates];
+  let fallback = candidates[0] ?? buildSelector(target, session.browser?.browserName);
+  let lastReason = "No UiPath selector candidate was validated.";
+
+  for (const candidate of candidates) {
+    if (candidate.uiPathValidated === false) {
+      fallback = fallback ?? candidate;
+      lastReason = candidate.uiPathValidationReason || lastReason;
+      continue;
+    }
+    const validation = await driver.validateUiPathSelector(candidate).catch((error) => ({
+      valid: false,
+      matchCount: 0,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+    const selector = {
+      ...candidate,
+      uiPathValidated: validation.valid,
+      uiPathValidationReason: validation.reason,
+    };
+    if (validation.valid) {
+      if (selector.anchors?.length) {
+        const resolvesTarget = await driver.exists(selector).catch(() => false);
+        if (!resolvesTarget) {
+          const reason = "Anchored selector matched its label but did not resolve the target field.";
+          fallback = { ...selector, uiPathValidated: false, uiPathValidationReason: reason };
+          lastReason = reason;
+          continue;
+        }
+        selector.anchors = selector.anchors.map((anchor) => ({
+          ...anchor,
+          uiPathValidated: true,
+          uiPathValidationReason: validation.reason,
+        }));
+      }
+      const selectorWithAnchors = selector.anchors?.length ? selector : await withValidatedAnchors(driver, selector, target, elements, session, step, emit);
+      emit({
+        type: "log",
+        level: "info",
+        message: `Validated UiPath selector for step ${step.index + 1}: ${validation.reason}`,
+        at: Date.now(),
+      });
+      return selectorWithAnchors;
+    }
+    fallback = selector;
+    lastReason = validation.reason;
+  }
+
+  emit({
+    type: "log",
+    level: "warn",
+    message: `No UiPath-valid selector found for step ${step.index + 1}. Generated XAML will skip this target activity. ${lastReason}`,
+    at: Date.now(),
+  });
+
+  return {
+    ...fallback,
+    uiPathValidated: false,
+    uiPathValidationReason: lastReason,
+  };
+}
+
+async function withValidatedAnchors(
+  driver: BrowserDriver,
+  selector: WebSelector,
+  target: UiElement,
+  elements: UiElement[],
+  session: SessionState,
+  step: StepResult,
+  emit: (event: RunEvent) => void,
+): Promise<WebSelector> {
+  const anchors = buildAnchorSelectors(target, elements, session.browser?.browserName);
+  const validatedAnchors = [];
+
+  for (const anchor of anchors) {
+    const validation = await driver
+      .validateUiPathSelector({
+        platform: target.platform,
+        kind: "web",
+        mbl: anchor.selector,
+        strategy: "xpath",
+        locator: "//*",
+      })
+      .catch((error) => ({
+        valid: false,
+        matchCount: 0,
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+
+    if (validation.valid) {
+      validatedAnchors.push({
+        ...anchor,
+        uiPathValidated: true,
+        uiPathValidationReason: validation.reason,
+      });
+    }
+  }
+
+  if (validatedAnchors.length) {
+    emit({
+      type: "log",
+      level: "info",
+      message: `Validated ${validatedAnchors.length} UiPath anchor selector(s) for step ${step.index + 1}.`,
+      at: Date.now(),
+    });
+  }
+
+  return validatedAnchors.length ? { ...selector, anchors: validatedAnchors } : selector;
+}
+
+function isClickAction(action: PlannedAction): boolean {
+  return action.actionType === "click" || action.actionType === "tap";
+}
+
+function signalValues(el: UiElement): string[] {
+  return [
+    el.text,
+    el.ariaLabel,
+    el.placeholder,
+    el.testId,
+    el.name,
+    el.htmlId,
+    el.href,
+  ]
+    .map((value) => value?.trim().toLowerCase().replace(/\s+/g, " "))
+    .filter((value): value is string => Boolean(value));
+}
+
+function displayName(el: UiElement): string {
+  return signalValues(el)[0] || el.tag || el.className || "element";
+}
+
+function matchingClickable(target: UiElement, elements: UiElement[]): UiElement | undefined {
+  const targetSignals = signalValues(target);
+  if (targetSignals.length === 0) return undefined;
+  return elements.find((el) => {
+    if (!el.clickable || el.index === target.index) return false;
+    const signals = signalValues(el);
+    return signals.some((signal) =>
+      targetSignals.some((targetSignal) => signal === targetSignal || signal.includes(targetSignal)),
+    );
+  });
+}
+
+function promoteClickableTarget(action: PlannedAction, elements: UiElement[]): PlannedAction {
+  if (action.targetIndex < 0 || action.targetIndex >= elements.length) return action;
+  const target = elements[action.targetIndex];
+  if (target.clickable) return action;
+  const replacement = matchingClickable(target, elements);
+  if (!replacement) return action;
+  return {
+    ...action,
+    targetIndex: replacement.index,
+    reason: `${action.reason} Using clickable "${displayName(replacement)}" instead of matching non-clickable text.`,
+  };
 }
 
 // A step is genuinely a scroll/gesture step (so a swipe action satisfies it),
@@ -351,12 +609,13 @@ function isScrollStep(description: string): boolean {
 }
 
 async function executeAction(
-  driver: DeviceDriver,
+  driver: BrowserDriver,
   action: PlannedAction,
-  selector: MobileSelector | undefined,
+  selector: WebSelector | undefined,
   step: StepResult,
 ): Promise<void> {
   const needsTarget =
+    action.actionType === "click" ||
     action.actionType === "tap" ||
     action.actionType === "setText" ||
     action.actionType === "getText" ||
@@ -370,6 +629,7 @@ async function executeAction(
 
   const t0 = Date.now();
   switch (action.actionType) {
+    case "click":
     case "tap": {
       const sigBefore = await driver.screenSignature();
       await withScrollRetry(driver, selector!, async () => {
@@ -379,7 +639,7 @@ async function executeAction(
         step.outcome = {
           dispatched: false,
           effect: "no-change",
-          detail: step.message || "The device could not perform the tap.",
+          detail: step.message || "The browser could not perform the click.",
           durationMs: Date.now() - t0,
         };
         break;
@@ -392,8 +652,8 @@ async function executeAction(
         dispatched: true,
         effect: changed ? "applied" : "no-change",
         detail: changed
-          ? "Device accepted the tap and the screen changed."
-          : "Device accepted the tap, but nothing on screen changed - the control may be disabled or the tap had no effect.",
+          ? "Browser accepted the click and the page changed."
+          : "Browser accepted the click, but nothing on the page changed - the control may be disabled or the click had no effect.",
         durationMs: Date.now() - t0,
       };
       break;
@@ -409,7 +669,7 @@ async function executeAction(
         dispatched: true,
         effect: applied ? "applied" : got ? "no-change" : "unverified",
         detail: applied
-          ? `Device accepted the input - the field now contains "${got}".`
+          ? `Browser accepted the input - the field now contains "${got}".`
           : got
             ? `Field contains "${got}" (expected "${want}").`
             : "Input sent, but the field could not be read back to confirm.",
@@ -436,6 +696,16 @@ async function executeAction(
         dispatched: true,
         effect: "unverified",
         detail: `Sent key "${action.key ?? "BACK"}".`,
+        durationMs: Date.now() - t0,
+      };
+      break;
+
+    case "closeBrowser":
+      step.status = "passed";
+      step.outcome = {
+        dispatched: true,
+        effect: "unverified",
+        detail: "Browser close requested by the testcase; the browser will close after the run completes.",
         durationMs: Date.now() - t0,
       };
       break;
@@ -474,8 +744,8 @@ async function executeAction(
 // One scroll-and-retry if the element isn't found - keeps the run resilient
 // without breaking the "one action per step" contract.
 async function withScrollRetry(
-  driver: DeviceDriver,
-  selector: MobileSelector,
+  driver: BrowserDriver,
+  selector: WebSelector,
   run: () => Promise<void>,
   step: StepResult,
 ): Promise<void> {

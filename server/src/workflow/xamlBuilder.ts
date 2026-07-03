@@ -1,4 +1,4 @@
-import type { MobileConnectionInfo, SessionState, StepResult } from "../types.js";
+import type { BrowserName, RuntimePopupAction, SessionState, StepResult } from "../types.js";
 
 function escAttr(value: string): string {
   return value
@@ -7,319 +7,393 @@ function escAttr(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
+
 function escText(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function xmlComment(value: string): string {
+  const safe = escText(value).replace(/--/g, "- -").replace(/-$/g, "- ");
+  return `        <!-- ${safe} -->`;
+}
+
+function escSelector(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/'/g, "&apos;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function singleQuote(text: string): string {
+  return text.replace(/"/g, "'");
+}
+
+function vb(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function elementText(step: StepResult): string {
   return (
     step.element?.text ||
-    step.element?.contentDesc ||
-    step.element?.accessibilityId ||
+    step.element?.ariaLabel ||
     step.element?.name ||
-    step.element?.resourceId ||
     step.element?.htmlId ||
+    step.element?.placeholder ||
     ""
   );
 }
 
 function friendlyName(step: StepResult): string {
-  const a = step.action;
-  const t = elementText(step);
-  switch (a?.actionType) {
+  const label = elementText(step);
+  switch (step.action?.actionType) {
+    case "click":
     case "tap":
-      return `Tap ${t || "element"}`;
+      return `Click ${label || "element"}`;
     case "setText":
-      return `Set Text ${t || "field"}`;
+      return `Type into ${label || "field"}`;
     case "getText":
-      return `Get Text ${t || "element"}`;
+      return `Get text from ${label || "element"}`;
     case "assertExists":
-      return `Element Exists ${t || "element"}`;
+      return `Verify ${label || "element"}`;
     case "swipe":
-      return `Swipe ${a.direction ?? "up"}`;
+      return `Scroll ${step.action.direction || "down"}`;
     case "pressKey":
-      return `Press ${a.key ?? "Back"}`;
+      return `Press ${step.action.key || "key"}`;
+    case "closeBrowser":
+      return "Close browser";
     default:
       return step.description;
   }
 }
 
-// Secure fields can't be reliably read back (value is masked) - skip read-back.
 function isPasswordField(step: StepResult): boolean {
   const e = step.element;
   if (!e) return /password|passcode|pwd/i.test(step.description);
   if ((e.inputType || "").toLowerCase() === "password") return true;
-  if (/securetextfield/i.test(e.className || "")) return true;
-  const hay = [e.htmlId, e.name, e.resourceId, e.contentDesc, e.accessibilityId, e.placeholder, e.text]
+  const hay = [e.htmlId, e.name, e.placeholder, e.ariaLabel, e.text]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
   return /password|passcode|pwd|secure/.test(hay) || /password/i.test(step.description);
 }
 
-const ANDROID_KEYCODES: Record<string, number> = {
-  BACK: 4,
-  HOME: 3,
-  ENTER: 66,
-  TAB: 61,
-  DEL: 67,
-  SEARCH: 84,
-  MENU: 82,
-};
-
-// W3C pointer-action payload for a swipe (Appium POST /session/{id}/actions).
-function swipeActionsJson(direction: string): string {
-  const cx = 540;
-  const cy = 1200;
-  const half = 350;
-  let fx = cx;
-  let fy = cy;
-  let tx = cx;
-  let ty = cy;
-  if (direction === "up") {
-    fy = cy + half;
-    ty = cy - half;
-  } else if (direction === "down") {
-    fy = cy - half;
-    ty = cy + half;
-  } else if (direction === "left") {
-    fx = cx + half;
-    tx = cx - half;
-  } else {
-    fx = cx - half;
-    tx = cx + half;
-  }
-  return `{"actions":[{"type":"pointer","id":"finger1","parameters":{"pointerType":"touch"},"actions":[{"type":"pointerMove","duration":0,"x":${fx},"y":${fy}},{"type":"pointerDown","button":0},{"type":"pause","duration":100},{"type":"pointerMove","duration":350,"x":${tx},"y":${ty}},{"type":"pointerUp","button":0}]}]}`;
-}
-
-// Appium press-keycode payload (POST /session/{id}/appium/device/press_keycode).
-function pressKeycodeJson(key: string): string {
-  const code = ANDROID_KEYCODES[(key || "BACK").toUpperCase()] ?? 4;
-  return `{"keycode":${code}}`;
-}
-
-// Human-readable message text never uses double quotes (they confuse the VB
-// argument parser / read oddly in logs) - use single quotes instead.
-function singleQuote(text: string): string {
-  return text.replace(/"/g, "'");
-}
-
 function logMsg(display: string, message: string, level: "Info" | "Warn" | "Error" = "Info"): string {
   return `        <ui:LogMessage DisplayName="${escAttr(display)}" Level="${level}" Message="${escAttr(singleQuote(message))}" />`;
 }
 
+function outArgumentXml(type: "x:String" | "x:Boolean", variable: string): string {
+  return `            <OutArgument x:TypeArguments="${type}">[${variable}]</OutArgument>`;
+}
+
+function inArgumentXml(type: "x:String" | "x:Boolean", value: string): string {
+  return `            <InArgument x:TypeArguments="${type}">${escText(value)}</InArgument>`;
+}
+
 function verifyXml(title: string, expression: string, outputMessage: string): string {
-  const t = escAttr(singleQuote(title));
-  // Expression keeps its real quotes (it's a VB expression, e.g. Contains("x")).
-  return `        <uta:VerifyExpression AlternativeVerificationTitle="${t}" ContinueOnFailure="True" DisplayName="Verify - ${t}" Expression="${escAttr(expression)}" OutputMessageFormat="${escAttr(singleQuote(outputMessage))}" TakeScreenshotInCaseOfFailingAssertion="True" TakeScreenshotInCaseOfSucceedingAssertion="False" />`;
+  const cleanTitle = singleQuote(title);
+  const displayName = escAttr(`Verify - ${cleanTitle}`);
+  return `        <uta:VerifyExpression DisplayName="${displayName}">
+          <uta:VerifyExpression.AlternativeVerificationTitle>
+${inArgumentXml("x:String", cleanTitle)}
+          </uta:VerifyExpression.AlternativeVerificationTitle>
+          <uta:VerifyExpression.ContinueOnFailure>
+${inArgumentXml("x:Boolean", "True")}
+          </uta:VerifyExpression.ContinueOnFailure>
+          <uta:VerifyExpression.Expression>
+${inArgumentXml("x:Boolean", expression)}
+          </uta:VerifyExpression.Expression>
+          <uta:VerifyExpression.OutputMessageFormat>
+${inArgumentXml("x:String", singleQuote(outputMessage))}
+          </uta:VerifyExpression.OutputMessageFormat>
+          <uta:VerifyExpression.TakeScreenshotInCaseOfFailingAssertion>
+${inArgumentXml("x:Boolean", "True")}
+          </uta:VerifyExpression.TakeScreenshotInCaseOfFailingAssertion>
+          <uta:VerifyExpression.TakeScreenshotInCaseOfSucceedingAssertion>
+${inArgumentXml("x:Boolean", "False")}
+          </uta:VerifyExpression.TakeScreenshotInCaseOfSucceedingAssertion>
+        </uta:VerifyExpression>`;
 }
 
-// VB string literal (quotes doubled).
-function vb(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-interface Rendered {
-  xml: string;
-  vars: string[]; // <Variable .../> declarations
-}
-
-function renderStep(step: StepResult): Rendered {
-  const n = step.index + 1;
-  const a = step.action;
-  const comment = `        <!-- Step ${n}: ${escText(step.description)} -->`;
-  const before = logMsg(`Log - Step ${n} start`, `Step ${n}: ${step.description}`);
-
-  if (!a) {
-    return { xml: `${comment}\n${before}`, vars: [] };
-  }
-
-  const display = escAttr(friendlyName(step));
-  const pieces: string[] = [comment, before];
-  const vars: string[] = [];
-
-  switch (a.actionType) {
-    case "tap": {
-      pieces.push(`        <uma:Tap DisplayName="${display}" RequiresInitialization="False" TapType="Single">
-          <uma:Tap.Target>
-${innerTarget(step)}          </uma:Tap.Target>
-        </uma:Tap>`);
-      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: tapped ${friendlyName(step)}`));
-      break;
-    }
-    case "setText": {
-      const value = a.text ?? "";
-      pieces.push(`        <uma:SetText ClearText="False" DisplayName="${display}" RequiresInitialization="False" SendNewLine="False" TapBefore="Long" Text="${escAttr(value)}">
-          <uma:SetText.Target>
-${innerTarget(step)}          </uma:SetText.Target>
-        </uma:SetText>`);
-      // Read the value back and verify it landed (skipped for masked/secure fields).
-      if (value && !isPasswordField(step)) {
-        const cv = `setTextCheck_${n}`;
-        vars.push(`        <Variable x:TypeArguments="x:String" Name="${cv}" />`);
-        pieces.push(`        <uma:GetText DisplayName="Read back ${escAttr(elementText(step) || "field")}" RequiresInitialization="False" Text="[${cv}]">
-          <uma:GetText.Target>
-${innerTarget(step)}          </uma:GetText.Target>
-        </uma:GetText>`);
-        pieces.push(
-          verifyXml(
-            `Step ${n} text entered`,
-            `[${cv}.Contains(${vb(value)})]`,
-            `Step ${n}: field should contain "${value}"`,
-          ),
-        );
-      }
-      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: entered text into ${friendlyName(step)}`));
-      break;
-    }
-    case "getText": {
-      const v = `getText_${n}`;
-      vars.push(`        <Variable x:TypeArguments="x:String" Name="${v}" />`);
-      pieces.push(`        <uma:GetText DisplayName="${display}" RequiresInitialization="False" Text="[${v}]">
-          <uma:GetText.Target>
-${innerTarget(step)}          </uma:GetText.Target>
-        </uma:GetText>`);
-      const expected = step.capturedText?.trim();
-      if (expected) {
-        pieces.push(
-          verifyXml(
-            `Step ${n} captured text`,
-            `[${v} = ${vb(expected)}]`,
-            `Step ${n}: expected captured text "${expected}"`,
-          ),
-        );
-      } else {
-        pieces.push(
-          verifyXml(
-            `Step ${n} captured text`,
-            `[Not String.IsNullOrEmpty(${v})]`,
-            `Step ${n}: captured text should not be empty`,
-          ),
-        );
-      }
-      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: captured text from ${friendlyName(step)}`));
-      break;
-    }
-    case "assertExists": {
-      const v = `exists_${n}`;
-      vars.push(`        <Variable x:TypeArguments="x:Boolean" Name="${v}" />`);
-      pieces.push(`        <uma:ElementExists DisplayName="${display}" Exists="[${v}]" RequiresInitialization="False">
-          <uma:ElementExists.Target>
-${innerTarget(step)}          </uma:ElementExists.Target>
-        </uma:ElementExists>`);
-      pieces.push(
-        verifyXml(
-          `Step ${n} - ${step.description}`,
-          `[${v}]`,
-          `Step ${n}: ${step.description}`,
-        ),
-      );
-      break;
-    }
-    case "swipe":
-    case "pressKey": {
-      // No dedicated mobile activity for this gesture - drive the Appium session
-      // directly via an HTTP Request (W3C actions for swipe, press_keycode for
-      // hardware keys). Set appiumServerUrl + appiumSessionId of the live
-      // session, and add a Content-Type: application/json header in Studio.
-      const isSwipe = a.actionType === "swipe";
-      const what = isSwipe ? `swipe ${a.direction ?? "up"}` : `press ${a.key ?? "Back"}`;
-      const suffix = isSwipe ? "/actions" : "/appium/device/press_keycode";
-      const endpoint = `[appiumServerUrl + "/session/" + appiumSessionId + "${suffix}"]`;
-      const body = isSwipe ? swipeActionsJson(a.direction ?? "up") : pressKeycodeJson(a.key ?? "BACK");
-      pieces.push(logMsg(`Log - Step ${n} gesture`, `Step ${n}: ${what} via Appium HTTP call`));
-      pieces.push(`        <!-- Add header Content-Type: application/json on this request before running -->
-        <uw:HttpClient DisplayName="HTTP - ${escAttr(what)}" EndPoint="${escAttr(endpoint)}" Method="Post">
-          <uw:HttpClient.Body>${escText(body)}</uw:HttpClient.Body>
-        </uw:HttpClient>`);
-      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: ${what}`));
-      break;
-    }
-  }
-
-  return { xml: pieces.join("\n"), vars };
-}
-
-// Target block for SetText/GetText/ElementExists (umm:Target indented).
-// Strip the data: prefix - umm:Target.ImageBase64 wants raw base64.
 function rawBase64(dataUrl?: string): string {
   return (dataUrl ?? "").replace(/^data:image\/\w+;base64,/, "");
 }
 
-function innerTarget(step: StepResult): string {
-  const sel = escAttr(step.selector?.mbl ?? "");
-  const friendly = escAttr(friendlyName(step));
-  const text = escAttr(elementText(step));
-  // Embed the captured element image into the target (as UiPath does) so the
-  // activity shows the field/element image in Studio.
-  const img = rawBase64(step.elementShot);
-  const imgAttr = img ? ` ImageBase64="${img}"` : "";
-  return `            <umm:Target Accuracy="0.8" FriendlyName="${friendly}" FullSelector="${sel}" FullSelectorArgument="${sel}"${imgAttr} Occurence="0" SearchSteps="Selector, FuzzySelector" Text="${text}">
-              <umm:Target.TapOffset>
-                <umm:TapOffset OffsetX="0" OffsetXArgument="0" OffsetY="0" OffsetYArgument="0" TapOffsetType="DeviceIndependentPixels" />
-              </umm:Target.TapOffset>
-            </umm:Target>
-`;
+function isTargetedAction(actionType?: string): boolean {
+  return (
+    actionType === "click" ||
+    actionType === "tap" ||
+    actionType === "setText" ||
+    actionType === "getText" ||
+    actionType === "assertExists"
+  );
 }
 
-function appiumUrlTemplate(provider: string): string {
-  switch (provider) {
-    case "saucelabs":
-      return "https://USERNAME:ACCESSKEY@ondemand.REGION.saucelabs.com/wd/hub";
-    case "browserstack":
-      return "https://USERNAME:ACCESSKEY@hub-cloud.browserstack.com/wd/hub";
+function isValidUiPathWebSelector(step: StepResult): boolean {
+  const selector = step.selector?.mbl;
+  if (!selector) return false;
+  if (step.selector?.uiPathValidated === false) return false;
+  return (
+    selector.startsWith("<html ") &&
+    selector.includes(" app='") &&
+    selector.includes("/><webctrl ") &&
+    /<webctrl\b[^>]*\btag='[^']+'/i.test(selector) &&
+    !/=''/i.test(selector)
+  );
+}
+
+function selectorSkipReason(step: StepResult): string {
+  if (step.selector?.uiPathValidated === false) {
+    return step.selector.uiPathValidationReason || "the selector did not validate against the live page";
+  }
+  return "no validated UiPath web selector was captured";
+}
+
+function anchorSelectorsXml(step: StepResult): string {
+  const anchors = step.selector?.anchors?.filter((anchor) => anchor.uiPathValidated !== false && anchor.selector);
+  if (!anchors?.length) return "";
+  return anchors
+    .map((anchor, index) =>
+      xmlComment(
+        `Validated anchor ${index + 1} (${anchor.relation}, ${anchor.distance}px, ${anchor.label}): ${anchor.selector}`,
+      ),
+    )
+    .join("\n");
+}
+
+function targetXml(step: StepResult, timeoutMs = 30000): string {
+  const selector = escAttr(step.selector?.mbl ?? "");
+  const image = rawBase64(step.elementShot);
+  const screenshot = image ? ` InformativeScreenshot="${image}"` : "";
+  return `            <ui:Target ClippingRegion="{x:Null}" Element="{x:Null}" Id="{x:Null}" Selector="${selector}" TimeoutMS="${timeoutMs}" WaitForReady="COMPLETE"${screenshot} />`;
+}
+
+function hotkeyFor(key?: string): string {
+  switch ((key || "").toUpperCase()) {
+    case "BACK":
+      return "browserback";
+    case "ENTER":
+      return "enter";
+    case "TAB":
+      return "tab";
+    case "ESC":
+    case "ESCAPE":
+      return "esc";
     default:
-      return "http://YOUR-APPIUM-HOST:4723/wd/hub";
+      return (key || "enter").toLowerCase();
   }
 }
 
-function connectionArguments(m: MobileConnectionInfo): string {
-  const args: string[] = [
-    `        <InArgument x:TypeArguments="x:String" x:Key="platformName">${escText(m.platformName)}</InArgument>`,
-    `        <InArgument x:TypeArguments="x:String" x:Key="platformVersion">${escText(m.platformVersion)}</InArgument>`,
-    `        <InArgument x:TypeArguments="x:String" x:Key="deviceName">${escText(m.deviceName)}</InArgument>`,
-    `        <InArgument x:TypeArguments="x:String" x:Key="automationName">${escText(m.automationName)}</InArgument>`,
-  ];
-  if (m.app) {
-    args.push(`        <InArgument x:TypeArguments="x:String" x:Key="app">${escText(m.app)}</InArgument>`);
+function browserApp(browser?: BrowserName): string {
+  return browser === "chrome" ? "chrome.exe" : "msedge.exe";
+}
+
+function popupTargetXml(action: RuntimePopupAction, browser?: BrowserName, timeoutMs = 500): string {
+  const htmlAttrs = [`app='${browserApp(browser)}'`];
+  if (action.pageTitle) htmlAttrs.push(`title='${escSelector(action.pageTitle)}'`);
+  const tag = (action.tag || "BUTTON").toUpperCase();
+  const label = action.label || "popup action";
+  const selector = `<html ${htmlAttrs.join(" ")} /><webctrl aaname='${escSelector(label)}' tag='${escSelector(tag)}' />`;
+  return `            <ui:Target ClippingRegion="{x:Null}" Element="{x:Null}" Id="{x:Null}" Selector="${escAttr(selector)}" TimeoutMS="${timeoutMs}" WaitForReady="COMPLETE" />`;
+}
+
+function popupClickXml(action: RuntimePopupAction, browser?: BrowserName): string {
+  const label = action.label || "popup action";
+  const display = escAttr(`Handle popup - ${singleQuote(label)}`);
+  return `        <ui:Click ContinueOnError="True" DisplayName="${display}" ClickType="CLICK_SINGLE" MouseButton="BTN_LEFT" SendWindowMessages="False" SimulateClick="False">
+          <ui:Click.Target>
+${popupTargetXml(action, browser)}
+          </ui:Click.Target>
+        </ui:Click>`;
+}
+
+function popupActionKey(action: RuntimePopupAction): string {
+  return [action.pageTitle ?? "", action.tag ?? "", action.label ?? ""]
+    .map((value) => value.trim().toLowerCase().replace(/\s+/g, " "))
+    .join("|");
+}
+
+function uniquePopupActions(actions: RuntimePopupAction[]): RuntimePopupAction[] {
+  const seen = new Set<string>();
+  return actions.filter((action) => {
+    const key = popupActionKey(action);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function popupActionsXml(actions: RuntimePopupAction[] | undefined, browser?: BrowserName, timing = "runtime"): string {
+  if (!actions?.length) return "";
+  const uniqueActions = uniquePopupActions(actions);
+  if (!uniqueActions.length) return "";
+  return `        <Sequence DisplayName="Handle ${timing} popup actions">
+${uniqueActions.map((action) => popupClickXml(action, browser)).join("\n")}
+        </Sequence>`;
+}
+
+interface Rendered {
+  xml: string;
+  vars: string[];
+}
+
+function renderStep(step: StepResult, browser?: BrowserName): Rendered {
+  const n = step.index + 1;
+  const action = step.action;
+  const pieces = [
+    popupActionsXml(step.popupActionsBefore, browser, `popup before step ${n}`),
+    `        <!-- Step ${n}: ${escText(step.description)} -->`,
+    logMsg(`Log - Step ${n} start`, `Step ${n}: ${step.description}`),
+  ].filter(Boolean);
+  const vars: string[] = [];
+
+  if (!action) {
+    const popupAfter = popupActionsXml(step.popupActionsAfter, browser, `popup after step ${n}`);
+    if (popupAfter) pieces.push(popupAfter);
+    return { xml: pieces.join("\n"), vars };
   }
-  if (m.browserName) {
-    args.push(`        <InArgument x:TypeArguments="x:String" x:Key="browserName">${escText(m.browserName)}</InArgument>`);
-  }
-  if (m.provider === "saucelabs") {
-    args.push(
-      `        <InArgument x:TypeArguments="x:String" x:Key="sauce:options">{ "username": "YOUR_SAUCE_USER", "accessKey": "YOUR_SAUCE_KEY", "appiumVersion": "latest" }</InArgument>`,
+
+  if (isTargetedAction(action.actionType) && !isValidUiPathWebSelector(step)) {
+    pieces.push(
+      logMsg(
+        `Log - Step ${n} selector skipped`,
+        `Step ${n}: ${selectorSkipReason(step)}, so this target activity was not generated.`,
+        "Warn",
+      ),
     );
-  } else if (m.provider === "browserstack") {
-    args.push(
-      `        <InArgument x:TypeArguments="x:String" x:Key="bstack:options">{ "userName": "YOUR_BS_USER", "accessKey": "YOUR_BS_KEY" }</InArgument>`,
-    );
+    const popupAfter = popupActionsXml(step.popupActionsAfter, browser, `popup after step ${n}`);
+    if (popupAfter) pieces.push(popupAfter);
+    return { xml: pieces.join("\n"), vars };
   }
-  return args.join("\n");
+
+  const display = escAttr(friendlyName(step));
+  const anchors = anchorSelectorsXml(step);
+  if (anchors) pieces.push(anchors);
+
+  switch (action.actionType) {
+    case "click":
+    case "tap":
+      pieces.push(`        <ui:Click DisplayName="${display}" ClickType="CLICK_SINGLE" MouseButton="BTN_LEFT" SendWindowMessages="False" SimulateClick="False">
+          <ui:Click.Target>
+${targetXml(step)}
+          </ui:Click.Target>
+        </ui:Click>`);
+      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: clicked ${friendlyName(step)}`));
+      break;
+
+    case "setText": {
+      const value = action.text ?? "";
+      pieces.push(`        <ui:TypeInto DisplayName="${display}" EmptyField="True" SendWindowMessages="False" SimulateType="False" Text="${escAttr(value)}">
+          <ui:TypeInto.Target>
+${targetXml(step)}
+          </ui:TypeInto.Target>
+        </ui:TypeInto>`);
+      if (value && !isPasswordField(step)) {
+        const v = `setTextCheck_${n}`;
+        vars.push(`        <Variable x:TypeArguments="x:String" Name="${v}" />`);
+        pieces.push(`        <ui:GetValue DisplayName="Read back ${escAttr(elementText(step) || "field")}">
+          <ui:GetValue.Value>
+${outArgumentXml("x:String", v)}
+          </ui:GetValue.Value>
+          <ui:GetValue.Target>
+${targetXml(step)}
+          </ui:GetValue.Target>
+        </ui:GetValue>`);
+        pieces.push(
+          verifyXml(
+            `Step ${n} text entered`,
+            `[${v}.Contains(${vb(value)})]`,
+            `Step ${n}: field should contain "${value}"`,
+          ),
+        );
+      }
+      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: typed into ${friendlyName(step)}`));
+      break;
+    }
+
+    case "getText": {
+      const v = `getText_${n}`;
+      vars.push(`        <Variable x:TypeArguments="x:String" Name="${v}" />`);
+      pieces.push(`        <ui:GetText DisplayName="${display}">
+          <ui:GetText.Value>
+${outArgumentXml("x:String", v)}
+          </ui:GetText.Value>
+          <ui:GetText.Target>
+${targetXml(step)}
+          </ui:GetText.Target>
+        </ui:GetText>`);
+      const expected = step.capturedText?.trim();
+      pieces.push(
+        expected
+          ? verifyXml(`Step ${n} captured text`, `[${v} = ${vb(expected)}]`, `Step ${n}: expected captured text "${expected}"`)
+          : verifyXml(`Step ${n} captured text`, `[Not String.IsNullOrEmpty(${v})]`, `Step ${n}: captured text should not be empty`),
+      );
+      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: captured text from ${friendlyName(step)}`));
+      break;
+    }
+
+    case "assertExists": {
+      const v = `exists_${n}`;
+      vars.push(`        <Variable x:TypeArguments="x:Boolean" Name="${v}" />`);
+      pieces.push(`        <ui:UiElementExists DisplayName="${display}">
+          <ui:UiElementExists.Exists>
+${outArgumentXml("x:Boolean", v)}
+          </ui:UiElementExists.Exists>
+          <ui:UiElementExists.Target>
+${targetXml(step)}
+          </ui:UiElementExists.Target>
+        </ui:UiElementExists>`);
+      pieces.push(verifyXml(`Step ${n} - ${step.description}`, `[${v}]`, `Step ${n}: ${step.description}`));
+      break;
+    }
+
+    case "swipe": {
+      const key = action.direction === "up" ? "pgdn" : action.direction === "down" ? "pgup" : "tab";
+      pieces.push(`        <ui:SendHotkey DisplayName="${display}" Key="${escAttr(key)}" />`);
+      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: sent browser scroll key ${key}`));
+      break;
+    }
+
+    case "pressKey":
+      pieces.push(`        <ui:SendHotkey DisplayName="${display}" Key="${escAttr(hotkeyFor(action.key))}" />`);
+      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: pressed ${action.key || "key"}`));
+      break;
+
+    case "closeBrowser":
+      pieces.push(`        <ui:CloseTab Browser="[CType(Browser, UiPath.Core.Browser)]" ContinueOnError="True" DisplayName="${display}" />`);
+      pieces.push(logMsg(`Log - Step ${n} done`, `Step ${n} done: close browser requested by testcase`));
+      break;
+  }
+
+  const popupAfter = popupActionsXml(step.popupActionsAfter, browser, `popup after step ${n}`);
+  if (popupAfter) pieces.push(popupAfter);
+
+  return { xml: pieces.join("\n"), vars };
+}
+
+function browserType(browser?: BrowserName): string {
+  return browser === "chrome" ? "Chrome" : "Edge";
 }
 
 const NAMESPACES = `  <TextExpression.NamespacesForImplementation>
     <sco:Collection x:TypeArguments="x:String">
+      <x:String>System</x:String>
       <x:String>System.Activities</x:String>
       <x:String>System.Activities.Statements</x:String>
-      <x:String>System.Activities.Expressions</x:String>
-      <x:String>Microsoft.VisualBasic</x:String>
-      <x:String>Microsoft.VisualBasic.Activities</x:String>
-      <x:String>System</x:String>
       <x:String>System.Collections.Generic</x:String>
       <x:String>System.Collections.ObjectModel</x:String>
       <x:String>System.Linq</x:String>
-      <x:String>System.Xml.Linq</x:String>
+      <x:String>Microsoft.VisualBasic</x:String>
+      <x:String>Microsoft.VisualBasic.Activities</x:String>
       <x:String>UiPath.Core</x:String>
       <x:String>UiPath.Core.Activities</x:String>
-      <x:String>UiPath.MobileAutomation.Activities</x:String>
-      <x:String>UiPath.MobileAutomation.Models</x:String>
+      <x:String>UiPath.UIAutomationNext.Enums</x:String>
       <x:String>UiPath.Testing.Activities</x:String>
     </sco:Collection>
   </TextExpression.NamespacesForImplementation>`;
 
-function references(hasHttp: boolean): string {
-  const list = [
+function references(): string {
+  const refs = [
     "Microsoft.VisualBasic",
     "mscorlib",
     "System",
@@ -329,15 +403,12 @@ function references(hasHttp: boolean): string {
     "System.ObjectModel",
     "System.Private.CoreLib",
     "System.Xaml",
-    "System.Xml",
-    "System.Xml.Linq",
     "UiPath.System.Activities",
+    "UiPath.UIAutomation.Activities",
     "UiPath.Testing.Activities",
-    "UiPath.MobileAutomation.Activities",
-    "UiPath.MobileAutomation",
-  ];
-  if (hasHttp) list.push("UiPath.Web.Activities");
-  const refs = list.map((r) => `      <AssemblyReference>${r}</AssemblyReference>`).join("\n");
+  ]
+    .map((r) => `      <AssemblyReference>${r}</AssemblyReference>`)
+    .join("\n");
   return `  <TextExpression.ReferencesForImplementation>
     <sco:Collection x:TypeArguments="AssemblyReference">
 ${refs}
@@ -345,88 +416,46 @@ ${refs}
   </TextExpression.ReferencesForImplementation>`;
 }
 
-/**
- * Generate a UiPath Mobile Automation test workflow (.xaml) from a completed
- * run. Uses the real mobile-testing activities (uma:Tap / SetText / GetText /
- * ElementExists inside a uma:MobileDeviceConnection scope), Log Message
- * activities around every step, and Verify Expression assertions to validate
- * behaviour. Gestures with no dedicated activity (swipe / hardware key) are
- * driven via an HTTP Request activity.
- *
- * NOTE: requires the UiPath.MobileAutomation + UiPath.Testing activity packages
- * (and UiPath.Web.Activities only when the test contains swipe/key steps).
- * Fill the Appium URL + credentials in the Mobile Device Connection before
- * running - we never embed credentials in the generated file.
- */
 export function buildXaml(session: SessionState): string {
-  const className = "MobileTest";
-  const m: MobileConnectionInfo = session.mobile ?? {
-    platformName: session.platform,
-    platformVersion: "",
-    deviceName: session.deviceLabel.split("·")[0]?.trim() || "device",
-    automationName: session.platform === "Android" ? "UiAutomator2" : "XCUITest",
-    provider: session.provider,
-  };
-
-  const rendered = session.steps.map(renderStep);
+  const rendered = session.steps.map((step) => renderStep(step, session.browser?.browserName));
   const body = rendered.map((r) => r.xml).join("\n");
   const vars = rendered.flatMap((r) => r.vars);
-  const hasHttp = session.steps.some(
-    (s) => s.action?.actionType === "swipe" || s.action?.actionType === "pressKey",
-  );
-  // The HTTP gesture activities reference the live Appium session.
-  if (hasHttp) {
-    vars.unshift(
-      `        <Variable x:TypeArguments="x:String" Name="appiumServerUrl" />`,
-      `        <Variable x:TypeArguments="x:String" Name="appiumSessionId" />`,
-    );
-  }
-
-  const startPageAttr = m.startUrl ? ` StartPage="${escAttr(m.startUrl)}"` : "";
   const variablesBlock = vars.length
     ? `        <Sequence.Variables>\n${vars.join("\n")}\n        </Sequence.Variables>\n`
     : "";
-
-  const uwNs = hasHttp
-    ? `\n  xmlns:uw="clr-namespace:UiPath.Web.Activities;assembly=UiPath.Web.Activities"`
-    : "";
+  const startUrl = session.browser?.startUrl || session.appLabel || "about:blank";
+  const browser = browserType(session.browser?.browserName);
 
   return `<?xml version="1.0" encoding="utf-8"?>
-<!-- Generated by UiPath Mobile Test Autopilot - UiPath Mobile Automation test -->
+<!-- Generated by UiPath Browser Test Autopilot - desktop browser automation -->
 <!-- Test case: ${escText(session.title)} -->
-<!-- Device: ${escText(session.deviceLabel)} via ${escText(session.provider)} -->
-<!-- BEFORE RUNNING: set the Appium URL + credentials on the Mobile Device      -->
-<!-- Connection below (credentials are intentionally NOT embedded here).        -->
-<!-- Requires packages: UiPath.MobileAutomation.Activities, UiPath.Testing.Activities${hasHttp ? ", UiPath.Web.Activities" : ""}. -->
-<Activity mc:Ignorable="sap sap2010" x:Class="${className}"
+<!-- Browser: ${escText(session.browserLabel || session.deviceLabel)} via ${escText(session.provider)} -->
+<!-- Start URL: ${escText(startUrl)} -->
+<!-- Requires packages: UiPath.UIAutomation.Activities, UiPath.System.Activities, UiPath.Testing.Activities. -->
+<Activity mc:Ignorable="sap sap2010" x:Class="BrowserTest"
   xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
   xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
   xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
   xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
   xmlns:sco="clr-namespace:System.Collections.ObjectModel;assembly=System.Private.CoreLib"
-  xmlns:ui="clr-namespace:UiPath.Core.Activities;assembly=UiPath.System.Activities"
-  xmlns:uma="clr-namespace:UiPath.MobileAutomation.Activities;assembly=UiPath.MobileAutomation.Activities"
-  xmlns:umm="clr-namespace:UiPath.MobileAutomation.Models;assembly=UiPath.MobileAutomation"
-  xmlns:uta="clr-namespace:UiPath.Testing.Activities;assembly=UiPath.Testing.Activities"${uwNs}
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:uta="clr-namespace:UiPath.Testing.Activities;assembly=UiPath.Testing.Activities"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Sequence DisplayName="${escAttr(session.title)}">
-    <uma:MobileDeviceConnection AppiumUrl="${escAttr(appiumUrlTemplate(m.provider))}" DisplayName="Mobile Device Connection - ${escAttr(m.deviceName)}"${startPageAttr} SingleInstanceForDevelopment="True" UseExistingOpenConnection="True" WaitForPageUpdateDevelopment="True">
-      <uma:MobileDeviceConnection.Arguments>
-${connectionArguments(m)}
-      </uma:MobileDeviceConnection.Arguments>
-      <uma:MobileDeviceConnection.Body>
+    <ui:OpenBrowser BrowserType="${escAttr(browser)}" DisplayName="Open ${escAttr(browser)}" NewSession="True" Private="False" Url="${escAttr(startUrl)}">
+      <ui:OpenBrowser.Body>
         <ActivityAction x:TypeArguments="x:Object">
           <ActivityAction.Argument>
-            <DelegateInArgument x:TypeArguments="x:Object" Name="UiPathScopeContext" />
+            <DelegateInArgument x:TypeArguments="x:Object" Name="Browser" />
           </ActivityAction.Argument>
-          <Sequence DisplayName="Test Steps">
+          <Sequence DisplayName="Browser Test Steps">
 ${variablesBlock}${body}
           </Sequence>
         </ActivityAction>
-      </uma:MobileDeviceConnection.Body>
-    </uma:MobileDeviceConnection>
+      </ui:OpenBrowser.Body>
+    </ui:OpenBrowser>
   </Sequence>
 ${NAMESPACES}
-${references(hasHttp)}
+${references()}
 </Activity>`;
 }

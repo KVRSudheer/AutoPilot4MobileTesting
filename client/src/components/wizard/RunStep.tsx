@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { ActionOutcome, RunStatus, SessionState, StepResult, StepStatus } from "../../lib/types";
 import { useRunStream } from "../../lib/sse";
-import { Button, Card, DeviceFrame, Eyebrow, Pill } from "../ui";
+import { BrowserFrame, Button, Card, Eyebrow, Pill } from "../ui";
 
 export function RunStep({
   session,
@@ -72,7 +72,7 @@ export function RunStep({
   const passed = steps.filter((s) => s.status === "passed").length;
   const attention = steps.filter((s) => s.status === "needs-attention" || s.status === "failed").length;
 
-  // Device frame follows the running step (or last with a shot) unless the
+  // Browser frame follows the running step (or last with a shot) unless the
   // user clicked a specific step to inspect it.
   const followIdx = runningStep?.index ?? lastShotIdx(steps);
   const shownIdx = selectedIdx ?? followIdx;
@@ -99,19 +99,17 @@ export function RunStep({
             <div>
               <Eyebrow>Step 3 · Automation</Eyebrow>
               <h2 className="text-xl font-semibold text-[#182128] dark:text-[#e6edf1]">
-                {finished ? "Run complete" : "Agent is driving the app…"}
+                {finished ? "Run complete" : "Agent is driving the browser..."}
               </h2>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Pill tone={current?.mode === "live" ? "blue" : "amber"}>
-              {current?.mode === "live" ? "Live device" : "Simulated device"}
-            </Pill>
+            <Pill tone="blue">Local browser</Pill>
             <Pill tone={current?.llmLive ? "emerald" : "grey"}>
               {current?.llmLive ? "UiPath LLM Gateway" : "Heuristic planner"}
             </Pill>
-            <Pill tone="navy">{current?.target === "browser" ? "Mobile browser" : "Native app"}</Pill>
-            <Pill tone="slate">{current?.deviceLabel}</Pill>
+            <Pill tone="navy">{current?.browserLabel || "Desktop browser"}</Pill>
+            <Pill tone="slate">{current?.browser?.startUrl || "Desktop web"}</Pill>
             <Pill tone="navy">{current?.llmModel}</Pill>
           </div>
         </div>
@@ -134,13 +132,11 @@ export function RunStep({
 
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         <Card className="flex shrink-0 flex-col items-center p-5 lg:w-auto">
-          <DeviceFrame
+          <BrowserFrame
             src={shownShot}
             busy={!finished && !shownShot}
             placeholder={
-              current?.mode === "live"
-                ? `Connecting to ${current?.provider}… Provisioning a real device can take 1-3 minutes.`
-                : "Starting simulated device…"
+              `Starting local ${current?.browserLabel || "desktop browser"}...`
             }
             caption={
               liveMode
@@ -346,7 +342,7 @@ function FieldShot({ src, cropped = true }: { src: string; cropped?: boolean }) 
   );
 }
 
-// Shows whether the device accepted the command and whether it took effect.
+// Shows whether the browser accepted the command and whether it took effect.
 function ActionOutcomeLine({ outcome }: { outcome: ActionOutcome }) {
   const color = !outcome.dispatched
     ? "text-[#c0334b] dark:text-[#ff7d8a]"
@@ -356,7 +352,7 @@ function ActionOutcomeLine({ outcome }: { outcome: ActionOutcome }) {
         ? "text-[#9a6700] dark:text-[#e0b341]"
         : "text-[#667880] dark:text-[#9aabb4]";
   const tag = !outcome.dispatched
-    ? "rejected by device"
+    ? "rejected by browser"
     : outcome.effect === "applied"
       ? "accepted & applied"
       : outcome.effect === "no-change"
@@ -365,7 +361,7 @@ function ActionOutcomeLine({ outcome }: { outcome: ActionOutcome }) {
   const secs = outcome.durationMs ? ` (${(outcome.durationMs / 1000).toFixed(1)}s)` : "";
   return (
     <p className={`mt-1 text-xs leading-5 ${color}`}>
-      <span className="font-semibold">Device:</span> {tag}
+      <span className="font-semibold">Browser:</span> {tag}
       {secs} - {outcome.detail}
     </p>
   );

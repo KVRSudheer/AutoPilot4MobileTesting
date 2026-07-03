@@ -11,7 +11,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use("/api", api);
 
 app.get("/", (_req, res) => {
-  res.json({ service: "UiPath Mobile Test Autopilot API", status: "ok" });
+  res.json({ service: "UiPath Browser Test Autopilot API", status: "ok" });
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

@@ -13,7 +13,7 @@ import type { BatchInfo } from "../../lib/api";
 import { actionLogUrl, workflowXamlUrl } from "../../lib/api";
 import { useBatchStream, type RunStreamLite } from "../../lib/sse";
 import type { RunStatus, StepResult } from "../../lib/types";
-import { Button, Card, DeviceFrame, Eyebrow, Pill } from "../ui";
+import { BrowserFrame, Button, Card, Eyebrow, Pill } from "../ui";
 import { RunStep } from "./RunStep";
 
 function latestShot(steps: StepResult[]): string | undefined {
@@ -33,7 +33,7 @@ export function BatchStep({
   batch: BatchInfo;
   onRestart: () => void;
   onStatus?: (status: RunStatus) => void;
-  // Re-run the whole batch (no args) or specific device indices.
+  // Re-run the whole batch (no args) or specific browser indices.
   onRerun?: (indices?: number[]) => void;
 }) {
   const { runs, order, batchDone } = useBatchStream(batch.batchId, batch.sessions);
@@ -60,7 +60,7 @@ export function BatchStep({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batchState, completedRuns, attentionRuns, list.length]);
 
-  // Detail view for a single run (full device + steps + logs), reusing RunStep.
+  // Detail view for a single run (full browser view + steps + logs), reusing RunStep.
   if (selectedRunId) {
     const run = runs[selectedRunId];
     return (
@@ -132,8 +132,8 @@ export function BatchStep({
           </div>
         </div>
         <p className="mt-3 text-xs text-[#9aa7ad] dark:text-[#71808a]">
-          Click any run to open its full device screen, steps and logs.
-          {onRerun ? " Re-run all devices, or just one from its tile." : ""}
+          Click any run to open its browser view, steps and logs.
+          {onRerun ? " Re-run all browsers, or just one from its tile." : ""}
         </p>
       </Card>
 
@@ -173,14 +173,14 @@ function RunTile({
     <Card className="flex flex-col gap-3 p-4">
       <button type="button" onClick={onOpen} className="flex items-start justify-between gap-2 text-left">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-[#182128] dark:text-[#e6edf1]">{run.session.deviceLabel}</p>
+          <p className="truncate text-sm font-semibold text-[#182128] dark:text-[#e6edf1]">{run.session.browserLabel || run.session.deviceLabel}</p>
           <p className="truncate text-xs text-[#667880] dark:text-[#9aabb4]">{run.session.title}</p>
         </div>
         <ChevronRight className="h-4 w-4 shrink-0 text-[#aab4b9] dark:text-[#71808a]" />
       </button>
 
       <button type="button" onClick={onOpen} className="block">
-        <DeviceFrame
+        <BrowserFrame
           src={shot}
           busy={connecting}
           maxW={210}
@@ -190,7 +190,7 @@ function RunTile({
       </button>
 
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <Pill tone={run.finished ? "emerald" : run.session.mode === "live" ? "blue" : "amber"}>
+        <Pill tone={run.finished ? "emerald" : "blue"}>
           {run.finished ? "Done" : run.session.status === "running" ? "Running" : "Connecting"}
         </Pill>
         <Pill tone="emerald">
@@ -226,7 +226,7 @@ function RunTile({
       {onRerun && run.finished ? (
         <Button variant="secondary" onClick={onRerun} className="w-full px-3 py-2 text-xs">
           <RotateCcw className="h-3.5 w-3.5" />
-          Re-run this device
+          Re-run this browser
         </Button>
       ) : null}
     </Card>
