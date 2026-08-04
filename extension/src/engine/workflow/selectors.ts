@@ -192,14 +192,19 @@ function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector 
       };
     }
 
-    // Unique id. Include the label when there is one - it documents which
-    // control this is without being needed to find it.
-    const label = !el.contentDesc && el.text ? `text='${esc(el.text)}'` : "";
+    /*
+     * A unique id already identifies the element, so nothing else is added.
+     * In particular NOT the visible text: labels routinely carry live data
+     * ("ENTER THE ONE-TIME PIN (OTP) SENT TO +27879330396" embeds the phone
+     * number), and an attribute that changes between runs turns a working
+     * selector into a failing one. className stays because a widget's type
+     * does not change and it says which control this is.
+     */
     if (bare) {
       return {
         platform: "Android",
         kind: "mobile",
-        mbl: parts(cls, id, label),
+        mbl: parts(cls, id),
         strategy: "-android uiautomator",
         locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}")`,
       };
@@ -207,7 +212,7 @@ function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector 
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: parts(cls, id, label),
+      mbl: parts(cls, id),
       strategy: "id",
       locator: el.resourceId,
     };

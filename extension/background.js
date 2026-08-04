@@ -3773,12 +3773,11 @@ function buildAndroidSelector(el, all) {
         locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}").instance(${ordinal})`
       };
     }
-    const label = !el.contentDesc && el.text ? `text='${esc2(el.text)}'` : "";
     if (bare) {
       return {
         platform: "Android",
         kind: "mobile",
-        mbl: parts(cls, id, label),
+        mbl: parts(cls, id),
         strategy: "-android uiautomator",
         locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}")`
       };
@@ -3786,7 +3785,7 @@ function buildAndroidSelector(el, all) {
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: parts(cls, id, label),
+      mbl: parts(cls, id),
       strategy: "id",
       locator: el.resourceId
     };
