@@ -1,4 +1,5 @@
 import type { FarmCredentials } from "../types.js";
+import { lambdaTestRegion } from "./lambdatest.js";
 
 // OS -> device name -> available OS versions (sorted desc).
 export interface DeviceCatalog {
@@ -102,6 +103,58 @@ function browserStackDevices(): DeviceCatalog {
   });
 }
 
+// LambdaTest publishes its real-device pool as a flat JSON list.
+async function lambdaTestDevices(creds: FarmCredentials): Promise<DeviceCatalog> {
+  const region = lambdaTestRegion(creds.region).toLowerCase();
+  const res = await fetch(
+    `https://mobile-api.lambdatest.com/mobile-automation/api/v1/list?region=${region}`,
+    { headers: { Authorization: basicAuth(creds.username ?? "", creds.accessKey ?? "") } },
+  );
+  if (!res.ok) {
+    throw new Error(
+      `LambdaTest device list failed (${res.status}): ${(await res.text()).slice(0, 200)}`,
+    );
+  }
+  const data = (await res.json()) as unknown;
+
+  const cat: DeviceCatalog = { Android: {}, iOS: {} };
+
+  // The payload is either {android:[…], ios:[…]} or a flat array of devices;
+  // each entry carries a device name plus one or more OS versions.
+  const ingest = (osHint: string, entries: unknown): void => {
+    if (!Array.isArray(entries)) return;
+    for (const raw of entries as Array<Record<string, unknown>>) {
+      // The live API returns `platformName` ("android" | "ios" | "tvos" | …);
+      // without it every device falls back to the hint and iOS lands under
+      // Android. Non-mobile platforms are dropped by addEntry.
+      const os = String(
+        raw.platformName ?? raw.platform ?? raw.os ?? raw.osName ?? osHint,
+      ).toLowerCase();
+      const name = String(raw.deviceName ?? raw.device_name ?? raw.name ?? "");
+      const versions = raw.versions ?? raw.version ?? raw.osVersion ?? raw.platformVersion;
+      if (Array.isArray(versions)) {
+        for (const v of versions) {
+          const version = typeof v === "object" && v ? String((v as Record<string, unknown>).version ?? "") : String(v);
+          addEntry(cat, os, name, version);
+        }
+      } else if (versions != null) {
+        addEntry(cat, os, name, String(versions));
+      }
+    }
+  };
+
+  if (Array.isArray(data)) {
+    ingest("android", data);
+  } else if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    ingest("android", obj.android ?? obj.Android);
+    ingest("ios", obj.ios ?? obj.iOS);
+    // Some responses nest everything under `devices`.
+    ingest("android", obj.devices);
+  }
+  return sortCatalog(cat);
+}
+
 export async function listFarmDevices(creds: FarmCredentials): Promise<DeviceCatalog> {
   if (creds.provider === "custom") {
     // No device-list API for a self-hosted hub - the user enters device + OS manually.
@@ -112,6 +165,12 @@ export async function listFarmDevices(creds: FarmCredentials): Promise<DeviceCat
       throw new Error("Sauce Labs username and access key are required to list devices.");
     }
     return sauceDevices(creds);
+  }
+  if (creds.provider === "lambdatest") {
+    if (!creds.username || !creds.accessKey) {
+      throw new Error("LambdaTest username and access key are required to list devices.");
+    }
+    return lambdaTestDevices(creds);
   }
   // BrowserStack - curated list (works without credentials).
   return browserStackDevices();

@@ -192,3 +192,18 @@ html.dark body {
 .atom-core {
   animation: atom-core 1.8s ease-in-out infinite;
 }
+
+/* Help drawer slide-in */
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.drawer-in {
+  animation: drawer-in 0.22s ease both;
+}

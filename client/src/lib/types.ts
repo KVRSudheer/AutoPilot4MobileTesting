@@ -1,7 +1,7 @@
 // Mirror of server/src/types.ts (kept in sync manually across workspaces).
 
 export type Platform = "Android" | "iOS";
-export type FarmProvider = "browserstack" | "saucelabs" | "custom";
+export type FarmProvider = "browserstack" | "saucelabs" | "lambdatest" | "custom";
 export type UiPathAuthMode = "clientCredentials" | "bearer";
 export type ConnectionTarget = "app" | "browser";
 
@@ -31,15 +31,21 @@ export interface DeviceConfig {
   osVersion: string;
   connectionTarget?: ConnectionTarget;
   browser?: string;
+  // ISO country code for the device's IP geolocation (e.g. "ZA").
+  // Supported by BrowserStack and LambdaTest.
+  geoLocation?: string;
+  // GPS the device reports to the app, as "latitude,longitude". This is what
+  // "use my current location" reads - separate from the IP-level geoLocation.
+  gpsCoordinates?: string;
 }
 
 export interface AndroidBuild {
-  buildId: string; // apk/aab reference: bs://… or storage:…
+  buildId: string; // apk/aab reference: bs://… , storage:… or lt://…
   appPackage?: string;
   appActivity?: string;
 }
 export interface IosBuild {
-  buildId: string; // ipa reference: bs://… or storage:…
+  buildId: string; // ipa reference: bs://… , storage:… or lt://…
   bundleId?: string;
 }
 
@@ -58,11 +64,20 @@ export interface SessionRequest {
   device: DeviceConfig;
   app: AppConfig;
   testSteps: string[];
+  // Replay: re-run a finished session's recorded actions + selectors with no
+  // LLM planning, to measure how fast the captured automation actually runs.
+  replayOf?: string;
   title?: string;
 }
 
 export type SessionMode = "live" | "simulated";
-export type StepStatus = "pending" | "running" | "passed" | "needs-attention" | "failed";
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "passed"
+  | "needs-attention"
+  | "failed"
+  | "skipped";
 export type ActionType = "tap" | "setText" | "swipe" | "pressKey" | "getText" | "assertExists";
 export type SwipeDirection = "up" | "down" | "left" | "right";
 
@@ -127,6 +142,14 @@ export interface StepResult {
   reason?: string;
   message?: string;
   capturedText?: string;
+  // Conditional execution: `condition` is the guard text from an `If …` block
+  // (steps sharing a `conditionGroup` are gated together); `optional` marks a
+  // step that is skipped rather than failed when its target isn't present.
+  // Pre-expansion step text, so exports know which {{tokens}} were this step's.
+  descriptionTemplate?: string;
+  condition?: string;
+  conditionGroup?: number;
+  optional?: boolean;
   outcome?: ActionOutcome;
   beforeScreenshot?: string;
   afterScreenshot?: string;
@@ -146,12 +169,22 @@ export interface MobileConnectionInfo {
   browserName?: string;
 }
 
+// Endpoint + capabilities the driver actually connected with (no credentials).
+export interface DriverConnectionInfo {
+  hubUrl: string;
+  capabilities: Record<string, unknown>;
+}
+
 export interface SessionState {
   id: string;
   title: string;
   mobile?: MobileConnectionInfo;
+  connection?: DriverConnectionInfo;
+  // {{token}} values generated for this run, so exported workflows can
+  // regenerate them at their own runtime instead of reusing this run's data.
+  generatedData?: Array<{ token: string; kind: string; arg: string; value: string }>;
   mode: SessionMode;
-  status: "created" | "connecting" | "running" | "completed" | "error";
+  status: "created" | "connecting" | "running" | "paused" | "completed" | "error";
   platform: Platform;
   target: ConnectionTarget;
   provider: FarmProvider;
@@ -159,6 +192,9 @@ export interface SessionState {
   appLabel: string;
   llmModel: string;
   llmLive: boolean;
+  // GPS the run applied to the device, as "latitude,longitude", so exported
+  // workflows can reproduce the same simulated position.
+  gpsCoordinates?: string;
   createdAt: number;
   steps: StepResult[];
   currentStep: number;
@@ -170,6 +206,10 @@ export type RunEvent =
   | { type: "step"; step: StepResult }
   | { type: "log"; level: "info" | "warn" | "error"; message: string; at: number }
   | { type: "frame"; image: string; at: number }
+  // Interactive control: the run is waiting for the operator. `candidates`
+  // are the elements read from the current screen so a target can be chosen.
+  | { type: "paused"; step: StepResult; candidates: UiElement[]; reason: string }
+  | { type: "resumed" }
   | { type: "done"; session: SessionState }
   | { type: "error"; message: string };
 

@@ -233,7 +233,7 @@ export function TestCaseStep({
                   Android build (.apk / .aab) - shared by all Android devices
                 </p>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <Field label="Build id" hint="bs://… or storage:… (uploaded build)">
+                  <Field label="Build id" hint="bs://… , storage:… or lt://… (uploaded build)">
                     <TextField
                       value={a.android?.buildId ?? ""}
                       onChange={(e) => setAndroid({ buildId: e.target.value })}
@@ -279,7 +279,7 @@ export function TestCaseStep({
                   iOS build (.ipa) - shared by all iOS devices
                 </p>
                 <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Build id" hint="bs://… or storage:… (uploaded build)">
+                  <Field label="Build id" hint="bs://… , storage:… or lt://… (uploaded build)">
                     <TextField
                       value={a.ios?.buildId ?? ""}
                       onChange={(e) => setIos({ buildId: e.target.value })}
@@ -361,7 +361,7 @@ export function TestCaseStep({
               rows={Math.max(8, steps.length + 1)}
               value={steps.join("\n")}
               onChange={(e) => setBulk(e.target.value)}
-              placeholder={`Paste your steps - one per line. Each new line becomes a step. e.g.\n\nEnter "standard_user" into the username field\nEnter "secret_sauce" into the password field\nTap the Login button\nVerify the Products page is shown`}
+              placeholder={`Paste your steps - one per line, ONE action per step. e.g.\n\nEnter "standard_user" into the username field\nEnter "secret_sauce" into the password field\nTap the Login button\nWait for the Products page to appear\n\nUnique data per run (the word 'random' alone will NOT vary):\n\nEnter the passport number R{{digits:7}}\nEnter the email {{email}}\n\nOptional steps and conditions:\n\nOptional: Tap the "Allow" button\n\nIf "OTP incorrect" is displayed\n  Tap "Request A New OTP"\n  Enter the OTP 0000\nEnd if`}
               className="font-mono text-[13px] leading-6"
             />
             <p className="mt-2 text-xs text-[#9aa7ad] dark:text-[#71808a]">

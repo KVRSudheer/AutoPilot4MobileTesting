@@ -16,7 +16,7 @@ export const env = {
     tenantName: read("UIPATH_TENANT_NAME"),
     clientId: read("UIPATH_CLIENT_ID"),
     clientSecret: read("UIPATH_CLIENT_SECRET"),
-    scope: read("UIPATH_SCOPE", "OR.Execution"),
+    scope: read("UIPATH_SCOPE", "OR.Execution ConversationalAgents"),
     bearerToken: read("UIPATH_BEARER_TOKEN"),
     llmModel: read("UIPATH_LLM_MODEL", "gpt-4o-mini-2024-07-18"),
     llmBasePath: read("UIPATH_LLM_BASE_PATH"),

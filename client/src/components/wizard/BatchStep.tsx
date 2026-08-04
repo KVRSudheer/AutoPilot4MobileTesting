@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { BatchInfo } from "../../lib/api";
 import { actionLogUrl, workflowXamlUrl } from "../../lib/api";
+import { downloadDoc, openDoc } from "../../lib/bridge";
 import { useBatchStream, type RunStreamLite } from "../../lib/sse";
 import type { RunStatus, StepResult } from "../../lib/types";
 import { Button, Card, DeviceFrame, Eyebrow, Pill } from "../ui";
@@ -77,7 +78,7 @@ export function BatchStep({
           <RunStep
             session={run.session}
             onBack={() => setSelectedRunId(null)}
-            onViewWorkflow={() => window.open(workflowXamlUrl(selectedRunId), "_blank")}
+            onViewWorkflow={() => void openDoc(workflowXamlUrl(selectedRunId))}
           />
         ) : null}
       </div>
@@ -208,18 +209,31 @@ function RunTile({
 
       {run.finished ? (
         <div className="flex flex-wrap gap-2">
-          <a href={workflowXamlUrl(run.session.id)} download className="flex-1">
-            <Button className="w-full px-3 py-2 text-xs">
-              <Download className="h-3.5 w-3.5" />
-              .xaml
-            </Button>
-          </a>
-          <a href={actionLogUrl(run.session.id)} download className="flex-1">
-            <Button variant="secondary" className="w-full px-3 py-2 text-xs">
-              <Download className="h-3.5 w-3.5" />
-              log
-            </Button>
-          </a>
+          <Button
+            className="flex-1 px-3 py-2 text-xs"
+            onClick={() =>
+              void downloadDoc(
+                workflowXamlUrl(run.session.id),
+                `workflow-${run.session.id}.xaml`,
+              ).catch((e: unknown) => alert(e instanceof Error ? e.message : "Download failed."))
+            }
+          >
+            <Download className="h-3.5 w-3.5" />
+            .xaml
+          </Button>
+          <Button
+            variant="secondary"
+            className="flex-1 px-3 py-2 text-xs"
+            onClick={() =>
+              void downloadDoc(
+                actionLogUrl(run.session.id),
+                `actionlog-${run.session.id}.json`,
+              ).catch((e: unknown) => alert(e instanceof Error ? e.message : "Download failed."))
+            }
+          >
+            <Download className="h-3.5 w-3.5" />
+            log
+          </Button>
         </div>
       ) : null}
 

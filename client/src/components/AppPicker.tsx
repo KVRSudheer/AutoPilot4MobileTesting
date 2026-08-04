@@ -32,7 +32,19 @@ export function AppPicker({
   const [url, setUrl] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const providerLabel = farm.provider === "browserstack" ? "BrowserStack" : "Sauce Labs";
+  const providerLabel =
+    farm.provider === "browserstack"
+      ? "BrowserStack"
+      : farm.provider === "lambdatest"
+        ? "LambdaTest"
+        : "Sauce Labs";
+  // The build-id scheme each farm hands out for an uploaded app.
+  const buildIdPrefix =
+    farm.provider === "browserstack"
+      ? "bs://"
+      : farm.provider === "lambdatest"
+        ? "lt://"
+        : "storage:";
   // Only show apps that match the selected platform (apps with unknown
   // platform are always shown).
   const visibleApps = apps ? apps.filter((a) => !a.platform || a.platform === platform) : null;
@@ -98,8 +110,7 @@ export function AppPicker({
       {!hasCreds ? (
         <p className="text-xs text-[#9a6700] dark:text-[#e0b341]">
           Enter your {providerLabel} username and access key on the Connect step to browse or upload
-          apps. (Or paste a {farm.provider === "browserstack" ? "bs://" : "storage:"} id manually
-          above.)
+          apps. (Or paste a {buildIdPrefix} id manually above.)
         </p>
       ) : mode === "browse" ? (
         <div>
@@ -163,7 +174,7 @@ export function AppPicker({
               className="block w-full text-xs text-[#667880] dark:text-[#9aabb4] file:mr-3 file:rounded-full file:border-0 file:bg-[#182128] file:px-4 file:py-2 file:text-xs file:font-semibold file:text-white hover:file:bg-[#0f161b]"
             />
           </div>
-          {farm.provider === "browserstack" ? (
+          {farm.provider === "browserstack" || farm.provider === "lambdatest" ? (
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex-1 min-w-[220px]">
                 <TextField

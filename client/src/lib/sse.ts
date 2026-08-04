@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { LogLine, RunEvent, SessionState, StepResult } from "./types";
+import { apiUrl } from "./api";
+import { openEventStream } from "./bridge";
+import type { LogLine, RunEvent, SessionState, StepResult, UiElement } from "./types";
 
 export interface RunStreamLite {
   session: SessionState;
@@ -39,7 +41,7 @@ export function useBatchStream(
     setRuns(seed);
     setBatchDone(false);
 
-    const source = new EventSource(`/api/batches/${batchId}/events`);
+    const source = openEventStream(apiUrl(`/api/batches/${batchId}/events`));
     source.onmessage = (evt) => {
       let data: BatchEvent;
       try {
@@ -100,6 +102,12 @@ export function useBatchStream(
   return { runs, order: orderRef.current, batchDone };
 }
 
+export interface PausedState {
+  step: StepResult;
+  candidates: UiElement[];
+  reason: string;
+}
+
 export interface RunStreamState {
   session: SessionState | null;
   steps: StepResult[];
@@ -107,6 +115,8 @@ export interface RunStreamState {
   finished: boolean;
   error: string | null;
   liveFrame: string | null; // latest live device-screen frame
+  // Set while the run is held at a pause point awaiting the operator.
+  paused: PausedState | null;
 }
 
 /**
@@ -120,6 +130,7 @@ export function useRunStream(sessionId: string | null): RunStreamState {
   const [finished, setFinished] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveFrame, setLiveFrame] = useState<string | null>(null);
+  const [paused, setPaused] = useState<PausedState | null>(null);
   const stepsRef = useRef<Map<number, StepResult>>(new Map());
   // True only once a terminal (done/error) event actually arrived. Guards
   // against treating an abandoned reconnect (CLOSED) as a finished run.
@@ -136,8 +147,9 @@ export function useRunStream(sessionId: string | null): RunStreamState {
     setFinished(false);
     setError(null);
     setLiveFrame(null);
+    setPaused(null);
 
-    const source = new EventSource(`/api/sessions/${sessionId}/events`);
+    const source = openEventStream(apiUrl(`/api/sessions/${sessionId}/events`));
 
     const syncSteps = (incoming?: StepResult[]) => {
       if (incoming) {
@@ -171,6 +183,12 @@ export function useRunStream(sessionId: string | null): RunStreamState {
         case "frame":
           setLiveFrame(data.image);
           break;
+        case "paused":
+          setPaused({ step: data.step, candidates: data.candidates, reason: data.reason });
+          break;
+        case "resumed":
+          setPaused(null);
+          break;
         case "done":
           sawTerminalRef.current = true;
           setSession(data.session);
@@ -199,5 +217,5 @@ export function useRunStream(sessionId: string | null): RunStreamState {
     return () => source.close();
   }, [sessionId]);
 
-  return { session, steps, logs, finished, error, liveFrame };
+  return { session, steps, logs, finished, error, liveFrame, paused };
 }

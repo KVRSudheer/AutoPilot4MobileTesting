@@ -117,7 +117,7 @@ export async function resolveUiPathToken(
       orgName: config.orgName,
       tenantName: config.tenantName,
       secret: token,
-    } as ConstructorParameters<typeof UiPath>[0]);
+    });
 
     const heldToken = sdk.getToken() ?? token;
 

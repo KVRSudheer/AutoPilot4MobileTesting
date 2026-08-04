@@ -13,7 +13,7 @@ Turn a plain-English mobile test case into a runnable **UiPath Mobile Automation
 3. **Run** — the agent connects to the farm's hosted Appium hub, launches the app, and for **each step**:
    reads the live screen → asks the UiPath LLM Gateway for the single best action + element → executes it →
    captures the resolved `<mbl/>` selector → screenshots before/after. Progress streams live via SSE.
-4. **Workflow** — download a ready-to-review **`.xaml`** workflow, a **JSON action log**, and a **selector catalog**.
+4. **Workflow** — download a ready-to-review **`.xaml`** workflow, a **C# coded workflow** (`.cs`, raw Appium), a **JSON action log**, and a **selector catalog**.
 
 ### Live vs. simulated mode (graceful fallback)
 
@@ -28,6 +28,61 @@ Each side falls back independently, so you can mix (e.g. real LLM against the sa
 
 ---
 
+## UiPath Coded Apps compatibility
+
+**The client is Coded App-ready; the server stays a companion API.** UiPath Coded Apps is a
+*static-site hosting* service (React/Vue/Angular; no server-side code), so the two halves split:
+
+| Part | Coded App compatible? | Why |
+|---|---|---|
+| `client/` (React 19 + Vite) | ✅ Yes — converted | Static SPA; uses `@uipath/uipath-typescript` for platform OAuth, relative asset paths, `@uipath/coded-apps-dev` dev plugin, `uipath.json` manifest |
+| `server/` (Express) | ❌ Architecturally impossible | webdriverio/Appium sessions, farm/LLM secrets, SSE streaming — none of that can run in a browser-hosted static site. Host it anywhere Node runs; the coded app calls it over HTTPS (CORS is already open) |
+
+When the client runs inside the platform (or via the dev plugin), a **Sign in with UiPath**
+button appears — the SDK's OAuth session token prefills bearer auth automatically, so no
+client secret is ever typed into the UI.
+
+### Engine extension: Coded App + extension, nothing else
+
+The deployed Coded App needs **no server at all**. The browser extension in
+[`extension/`](extension/) *is* the backend: it runs the whole engine (LLM Gateway planning,
+device automation over a fetch-based WebDriver client, selector capture, `.xaml` generation)
+inside its service worker. Load it unpacked once, reload the app, and the Connect step shows
+**“Engine extension active”**.
+
+```
+Coded App (uipath.host)  ──postMessage──►  extension service worker
+                                              ├─► UiPath LLM Gateway
+                                              ├─► BrowserStack / Sauce (WebDriver)
+                                              └─► .xaml + selector catalog
+```
+
+`extension/src/engine/` is a port of `server/src/`; `webdriverio` (Node-only) is replaced by a
+fetch-based W3C WebDriver client. The `server/` workspace is still there for local development
+(`npm run dev`). See [extension/README.md](extension/README.md).
+
+### Deploying the client as a Coded App
+
+```bash
+# one-time: fill in client/uipath.json (non-confidential external app clientId,
+# org, tenant; redirectUri http://localhost:5174 for local dev)
+npm install -g @uipath/cli && uip tools install codedapp
+
+# point the client at wherever the Express server is hosted, then build
+cd client
+VITE_API_BASE=https://your-autopilot-api.example.com npm run build
+
+uip login
+uip codedapp pack dist -n mobile-test-autopilot --version 1.0.0
+uip codedapp publish
+uip codedapp deploy    # -> https://<orgname>.uipath.host/mobile-test-autopilot
+```
+
+With `uipath.json` left as the placeholder, everything behaves exactly as before
+(local dev proxy, manual credentials) — the coded-app pieces stay inert.
+
+---
+
 ## Architecture
 
 Monorepo (npm workspaces). A Vite **client** dev-proxies `/api` to an Express **server**.
@@ -36,9 +91,9 @@ Monorepo (npm workspaces). A Vite **client** dev-proxies `/api` to an Express **
 client/   React 19 + Vite + Tailwind 4 (UiPath branding), 4-step wizard, SSE live view
 server/   Express + TypeScript
   uipath/      auth (client-creds + bearer via UiPath SDK) · llmGateway REST · planner
-  farms/       provider abstraction · browserstack · saucelabs
+  farms/       provider abstraction · browserstack · saucelabs · lambdatest
   automation/  session (webdriverio) · driver · pageModel (Appium XML → elements) · orchestrator · simulated
-  workflow/    selectors (<mbl/>) · xamlBuilder (.xaml) · actionLog (JSON + catalog)
+  workflow/    selectors (<mbl/>) · xamlBuilder (.xaml) · csharpBuilder (coded .cs) · actionLog
   fixtures/    declarative sample app → page source + SVG screenshots for simulated runs
 ```
 
@@ -65,10 +120,10 @@ Edit `server/.env` to set defaults (UiPath org/tenant/creds, farm creds, LLM mod
 ## Run
 
 ```bash
-npm run dev        # server on :8787, client on :5173 (one command)
+npm run dev        # server on :8787, client on :5174 (one command)
 ```
 
-Open **http://localhost:5173** and walk the wizard.
+Open **http://localhost:5174** and walk the wizard.
 
 Other scripts: `npm run build` (typecheck + build both), `npm run typecheck`, `npm start` (built server).
 
@@ -80,7 +135,8 @@ Other scripts: `npm run build` (typecheck + build both), `npm run typecheck`, `n
   `POST {baseUrl}/identity_/connect/token` (`grant_type=client_credentials`) and hands the bearer token to the UiPath SDK.
 - **Bearer / PAT** — paste a token directly; the SDK holds it.
 
-`OR.Execution` / `OR.Default` scopes typically cover the LLM Gateway — confirm in your tenant's external-app scope picker.
+Grant the external application **`OR.Execution ConversationalAgents`** — `ConversationalAgents` is what unlocks the
+LLM Gateway chat-completions endpoint. The in-app **Help** panel (top right, or `#help`) documents this end to end.
 
 ## Device farms
 
@@ -88,12 +144,21 @@ Other scripts: `npm run build` (typecheck + build both), `npm run typecheck`, `n
 |---|---|---|---|
 | **BrowserStack** | `hub-cloud.browserstack.com/wd/hub` | `bs://<id>` | `bstack:options` capabilities |
 | **Sauce Labs** | `ondemand.<region>.saucelabs.com/wd/hub` | `storage:<id>` | region selectable (us-west-1 / us-east-4 / eu-central-1) |
+| **LambdaTest** | `mobile-hub[.eu-central-1].lambdatest.com/wd/hub` | `lt://<id>` | `lt:options` capabilities; US / EU data centre |
 
 Both target Android (UiAutomator2) and iOS (XCUITest) via standard W3C Appium capabilities.
 
 ---
 
 ## Output: the generated workflow
+
+Every run produces **two runnable artifacts** from the same captured selectors:
+
+| Download | What it is |
+|---|---|
+| **`.xaml`** | Classic UiPath workflow using Mobile Automation activities in a `MobileDeviceConnection` scope. |
+| **`.cs`** | A UiPath **Coded Workflow** that drives the device with the raw **Appium .NET client** (`Appium.WebDriver` v5+) instead of activities — the same WebDriver calls the agent itself made. Needs no mobile activity package; it replays the exact hub, capabilities and selectors from the run. Credentials are never written into the file — they are read from environment variables (`LT_USERNAME`/`LT_ACCESS_KEY`, `BROWSERSTACK_*`, `SAUCE_*`) so the file is safe to commit. |
+
 
 - **Selectors** are UiPath mobile **`<mbl/>`** format (attribute-based — no XPath), preferring the most stable
   attribute per platform (Android: resource-id → content-desc → text; iOS: accessibilityId → name → label). These are **exact**.
