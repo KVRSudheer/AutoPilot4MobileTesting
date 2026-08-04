@@ -27,6 +27,15 @@ function vbGenerator(g: GeneratedValue): string | null {
     case "dob":
       // Always 18+: a day inside the window ending before the 18th birthday.
       return `DateTime.Today.AddYears(-70).AddDays(New Random().Next(0, (DateTime.Today.AddYears(-18).AddDays(-1) - DateTime.Today.AddYears(-70)).Days)).ToString("${g.arg || "dd/MM/yyyy"}")`;
+    case "expiry":
+      return `DateTime.Today.AddYears(3).ToString("${g.arg || "MM/yy"}")`;
+    case "cvv": {
+      const digits = Number(g.arg) || 3;
+      if (digits < 1 || digits > 9) return null;
+      return `New Random().Next(${Math.pow(10, digits - 1)}, ${Math.pow(10, digits) - 1}).ToString()`;
+    }
+    // cardnumber and nameoncard stay literal: a fixed test PAN must not be
+    // randomised, and a name has no safe VB one-liner.
     default:
       return null; // names etc. stay literal - no safe one-liner
   }

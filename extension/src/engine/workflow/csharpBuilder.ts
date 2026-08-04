@@ -59,6 +59,15 @@ function generatorCall(g: GeneratedValue): string {
       return `RandomDateOfBirth(${csString(g.arg || "dd/MM/yyyy")})`;
     case "date":
       return `DateTime.Now.ToString(${csString(g.arg || "dd/MM/yyyy")})`;
+    case "nameoncard":
+      return `RandomFirstName() + " " + RandomLastName()`;
+    case "cardnumber":
+      // Fixed on purpose: sandboxes decline PANs outside their test set.
+      return csString(g.arg || "4111111111111111");
+    case "expiry":
+      return `DateTime.Today.AddYears(3).ToString(${csString(g.arg || "MM/yy")})`;
+    case "cvv":
+      return `RandomDigits(${Number(g.arg) || 3})`;
     default:
       return csString(g.value);
   }

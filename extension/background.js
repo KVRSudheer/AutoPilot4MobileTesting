@@ -2985,6 +2985,13 @@ function asBool(v) {
   if (v === void 0) return void 0;
   return v === "true";
 }
+function androidBoundsCenter(bounds) {
+  if (!bounds) return null;
+  const m = bounds.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+  if (!m) return null;
+  const [, x1, y1, x2, y2] = m.map(Number);
+  return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
+}
 function isInteresting(el) {
   return Boolean(
     el.text || el.contentDesc || el.resourceId || el.accessibilityId || el.name || el.clickable
@@ -3213,6 +3220,9 @@ var WebdriverDriver = class {
     const element = await this.el(selector);
     await element.waitForExist({ timeout: 1e4 });
     await element.click();
+  }
+  async tapAt(x, y) {
+    await this.browser.action("pointer", { parameters: { pointerType: "touch" } }).move({ duration: 0, x: Math.round(x), y: Math.round(y) }).down().pause(80).up().perform();
   }
   async setText(selector, text) {
     const element = await this.el(selector);
@@ -3578,6 +3588,9 @@ var SimulatedDriver = class {
   async tap(_selector) {
     this.advance();
   }
+  async tapAt(_x, _y) {
+    this.advance();
+  }
   async setText(_selector, _text) {
   }
   async getText(_selector) {
@@ -3721,32 +3734,79 @@ function buildWebSelector(el) {
   }
   return { ...base, strategy: "css", locator: tag };
 }
+function stableDescription(el) {
+  const desc = (el.contentDesc ?? "").trim();
+  if (!desc) return void 0;
+  const comma = desc.indexOf(",");
+  const prefix = comma > 0 ? desc.slice(0, comma) : desc;
+  return prefix.trim() || void 0;
+}
+function uiaLit(value) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 function buildAndroidSelector(el, all) {
+  const cls = el.className ? `android:className='${esc2(el.className)}'` : "";
+  const parts = (...attrs) => `<mbl ${attrs.filter(Boolean).join(" ")} />`;
   if (el.resourceId) {
     const id = `id='${esc2(el.resourceId)}'`;
-    const { ordinal, count } = duplicatePosition(el, all, (e) => e.resourceId);
-    if (count > 1) {
+    const bare = !el.resourceId.includes(":id/");
+    const group = all?.filter((e) => e.resourceId === el.resourceId) ?? [el];
+    if (group.length > 1) {
+      const mine = stableDescription(el);
+      const unique = mine !== void 0 && group.filter((e) => stableDescription(e) === mine).length === 1;
+      if (unique) {
+        return {
+          platform: "Android",
+          kind: "mobile",
+          // Wildcard: everything after the field name is its current value.
+          mbl: parts(cls, id, `accessibilityId='${esc2(mine)}*'`),
+          strategy: "-android uiautomator",
+          locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}").descriptionStartsWith("${uiaLit(mine)}")`
+        };
+      }
+      const { ordinal } = duplicatePosition(el, all, (e) => e.resourceId);
       return {
         platform: "Android",
         kind: "mobile",
-        mbl: `<mbl ${id} idx='${ordinal + 1}' />`,
+        mbl: parts(cls, id, `idx='${ordinal + 1}'`),
         strategy: "-android uiautomator",
-        locator: `new UiSelector().resourceId("${el.resourceId.replace(/"/g, '\\"')}").instance(${ordinal})`
+        locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}").instance(${ordinal})`
+      };
+    }
+    const label = !el.contentDesc && el.text ? `text='${esc2(el.text)}'` : "";
+    if (bare) {
+      return {
+        platform: "Android",
+        kind: "mobile",
+        mbl: parts(cls, id, label),
+        strategy: "-android uiautomator",
+        locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}")`
       };
     }
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: `<mbl ${id} />`,
+      mbl: parts(cls, id, label),
       strategy: "id",
       locator: el.resourceId
     };
   }
   if (el.contentDesc) {
+    const stable = stableDescription(el);
+    const volatile = stable !== void 0 && stable !== el.contentDesc.trim();
+    if (volatile && stable) {
+      return {
+        platform: "Android",
+        kind: "mobile",
+        mbl: parts(cls, `accessibilityId='${esc2(stable)}*'`),
+        strategy: "-android uiautomator",
+        locator: `new UiSelector().descriptionStartsWith("${uiaLit(stable)}")`
+      };
+    }
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: `<mbl accessibilityId='${esc2(el.contentDesc)}' />`,
+      mbl: parts(cls, `accessibilityId='${esc2(el.contentDesc)}'`),
       strategy: "accessibility id",
       locator: el.contentDesc
     };
@@ -3755,17 +3815,17 @@ function buildAndroidSelector(el, all) {
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: `<mbl text='${esc2(el.text)}' />`,
+      mbl: parts(cls, `text='${esc2(el.text)}'`),
       strategy: "-android uiautomator",
-      locator: `new UiSelector().text("${el.text.replace(/"/g, '\\"')}")`
+      locator: `new UiSelector().text("${uiaLit(el.text)}")`
     };
   }
   return {
     platform: "Android",
     kind: "mobile",
-    mbl: `<mbl android:className='${esc2(el.className)}' />`,
+    mbl: parts(cls),
     strategy: "-android uiautomator",
-    locator: `new UiSelector().className("${el.className}")`
+    locator: `new UiSelector().className("${uiaLit(el.className)}")`
   };
 }
 function buildIosSelector(el, all) {
@@ -4149,6 +4209,57 @@ function labelForLog(el) {
 function delay2(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+var PERMISSION_DIALOG_MARKERS = [
+  "permissioncontroller:id/",
+  "packageinstaller:id/permission"
+];
+var PERMISSION_ALLOW_IDS = [
+  "com.android.permissioncontroller:id/permission_allow_button",
+  "com.android.packageinstaller:id/permission_allow_button",
+  "com.android.permissioncontroller:id/permission_allow_foreground_only_button",
+  "com.android.permissioncontroller:id/permission_allow_one_time_button"
+];
+function isPermissionDialog(elements) {
+  return elements.some(
+    (e) => PERMISSION_DIALOG_MARKERS.some((m) => (e.resourceId ?? "").includes(m))
+  );
+}
+async function clearPermissionDialogs(driver, elements, emit, maxPrompts = 4) {
+  let current = elements;
+  for (let i = 0; i < maxPrompts && isPermissionDialog(current); i += 1) {
+    const allow = current.find((e) => PERMISSION_ALLOW_IDS.includes(e.resourceId ?? ""));
+    if (!allow) {
+      emit({
+        type: "log",
+        level: "warn",
+        message: "A system permission dialog is on screen but its Allow button was not found - the app is blocked behind it.",
+        at: Date.now()
+      });
+      return current;
+    }
+    const prompt = current.find((e) => (e.resourceId ?? "").endsWith("permission_message"))?.text;
+    emit({
+      type: "log",
+      level: "info",
+      message: `Android permission dialog${prompt ? ` - "${prompt}"` : ""}: tapping "${allow.text || "Allow"}" so the app is reachable.`,
+      at: Date.now()
+    });
+    try {
+      await driver.tap(buildSelector(allow, current));
+    } catch (error) {
+      emit({
+        type: "log",
+        level: "warn",
+        message: `Could not dismiss the permission dialog: ${error instanceof Error ? error.message : String(error)}`,
+        at: Date.now()
+      });
+      return current;
+    }
+    await delay2(1200);
+    current = await driver.captureElements();
+  }
+  return current;
+}
 function startLiveFrames(driver, emit) {
   const intervalMs = env.farm.liveFrameMs;
   if (!intervalMs) return () => void 0;
@@ -4237,7 +4348,7 @@ async function runAutomation(args) {
         const outcome = step.status;
         const failed = outcome === "failed" || outcome === "needs-attention";
         if (!failed || !control.pauseOnFailure || control.stopped) break;
-        const candidates = await driver.captureElements().catch(() => []);
+        const candidates = await driver.captureElements().then((els) => clearPermissionDialogs(driver, els, emit)).catch(() => []);
         const choice = await pauseHere(
           session,
           step,
@@ -4371,6 +4482,7 @@ async function runStep(ctx) {
     return planActionHeuristic(step.description, els);
   };
   let elements = await driver.captureElements();
+  elements = await clearPermissionDialogs(driver, elements, emit);
   let action = await planOnce(elements);
   if (forceElement) {
     elements = forceContext && forceContext.length ? forceContext : elements;
@@ -4507,6 +4619,28 @@ async function runStep(ctx) {
     }
     const shot = await driver.captureElementShot(selector);
     if (shot) step.elementShot = shot;
+    if (forceElement && action.actionType === "tap" && !hasIdentifier(target2) && driver.target === "app") {
+      const centre = androidBoundsCenter(target2.bounds);
+      if (centre) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `"${labelForLog(target2)}" has no stable identifier (its class alone matches many elements), so tapping its position (${centre.x}, ${centre.y}).`,
+          at: Date.now()
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "applied",
+          detail: `Tapped at (${centre.x}, ${centre.y}).`,
+          durationMs: Date.now() - t0
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+    }
     await executeAction(driver, action, selector, step, emit);
     step.afterScreenshot = await driver.takeScreenshot();
     return;
@@ -4690,6 +4824,15 @@ function vbGenerator(g) {
       return `DateTime.Now.ToString("${g.arg || "dd/MM/yyyy"}")`;
     case "dob":
       return `DateTime.Today.AddYears(-70).AddDays(New Random().Next(0, (DateTime.Today.AddYears(-18).AddDays(-1) - DateTime.Today.AddYears(-70)).Days)).ToString("${g.arg || "dd/MM/yyyy"}")`;
+    case "expiry":
+      return `DateTime.Today.AddYears(3).ToString("${g.arg || "MM/yy"}")`;
+    case "cvv": {
+      const digits = Number(g.arg) || 3;
+      if (digits < 1 || digits > 9) return null;
+      return `New Random().Next(${Math.pow(10, digits - 1)}, ${Math.pow(10, digits) - 1}).ToString()`;
+    }
+    // cardnumber and nameoncard stay literal: a fixed test PAN must not be
+    // randomised, and a name has no safe VB one-liner.
     default:
       return null;
   }
@@ -5105,6 +5248,14 @@ function generatorCall(g) {
       return `RandomDateOfBirth(${csString(g.arg || "dd/MM/yyyy")})`;
     case "date":
       return `DateTime.Now.ToString(${csString(g.arg || "dd/MM/yyyy")})`;
+    case "nameoncard":
+      return `RandomFirstName() + " " + RandomLastName()`;
+    case "cardnumber":
+      return csString(g.arg || "4111111111111111");
+    case "expiry":
+      return `DateTime.Today.AddYears(3).ToString(${csString(g.arg || "MM/yy")})`;
+    case "cvv":
+      return `RandomDigits(${Number(g.arg) || 3})`;
     default:
       return csString(g.value);
   }
@@ -6323,6 +6474,21 @@ function expandTokensWithData(lines) {
         break;
       case "dob":
         value = formatDate(adultBirthDate(), arg || "dd/MM/yyyy");
+        break;
+      case "nameoncard":
+        value = `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
+        break;
+      case "cardnumber":
+        value = arg || "4111111111111111";
+        break;
+      case "expiry": {
+        const later = /* @__PURE__ */ new Date();
+        later.setFullYear(later.getFullYear() + 3);
+        value = formatDate(later, arg || "MM/yy");
+        break;
+      }
+      case "cvv":
+        value = repeatRandom(n || 3, "0123456789");
         break;
       default:
         value = token;

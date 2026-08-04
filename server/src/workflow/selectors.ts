@@ -110,53 +110,125 @@ function buildWebSelector(el: UiElement): MobileSelector {
   return { ...base, strategy: "css", locator: tag };
 }
 
+/**
+ * The stable part of an Android content-description.
+ *
+ * This app labels form fields as "<what it is>, <what it currently holds>":
+ * "Address Name, Home", "House Number, 56", "Street Name, Darling St". Only the
+ * part before the comma survives the field being typed into, so matching that
+ * prefix identifies the field by NAME while ignoring its value.
+ */
+function stableDescription(el: UiElement): string | undefined {
+  const desc = (el.contentDesc ?? "").trim();
+  if (!desc) return undefined;
+  const comma = desc.indexOf(",");
+  const prefix = comma > 0 ? desc.slice(0, comma) : desc;
+  return prefix.trim() || undefined;
+}
+
+function uiaLit(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector {
   /*
-   * The selector carries EXACTLY the one attribute the agent located this
-   * element with - nothing else.
+   * Selector policy.
    *
-   * Listing extra attributes makes UiPath require all of them to match, so a
-   * selector that stacked android:className + accessibilityId + id failed
-   * whenever any single one drifted. That is not hypothetical here: Android
-   * content-descriptions on this app embed the field's current value
-   * ("House Number, 56", "Address Name, Home", "Mobile Number,"), so an
-   * accessibilityId captured during recording stops matching as soon as the
-   * field holds something else. The agent never needed those attributes to
-   * find the element, so the exported selector does not carry them either.
+   * The <mbl> names the CONTROL, not just an id: className says what kind of
+   * widget it is, so `<mbl android:className='android.widget.Button'
+   * id='modal-primary-action' text='Continue Browsing' />` is readable and
+   * distinguishes the Button from the TextView beside it that shares the same
+   * label. Attribute names are the ones Studio recognises - `id` for the
+   * resource-id, `accessibilityId` for the content-desc.
    *
-   * Attribute names are the ones Studio recognises: `id` for the resource-id
-   * and `accessibilityId` for the content-desc (NOT "resourceid" and not
-   * "content-desc").
+   * What must NOT go in is a whole content-description that embeds the field's
+   * live value ("House Number, 56"): it stops matching the moment the field
+   * holds something else. Where such a description is the only way to tell
+   * duplicates apart, only its stable prefix is used, wildcarded.
+   *
+   * Positional `idx`/`instance()` is a last resort: it silently targets the
+   * wrong control as soon as the screen reorders.
    */
+  const cls = el.className ? `android:className='${esc(el.className)}'` : "";
+  const parts = (...attrs: Array<string | false | undefined>) =>
+    `<mbl ${attrs.filter(Boolean).join(" ")} />`;
 
-  // Runtime locator: prefer resource-id > accessibility id (content-desc) > uiautomator text.
   if (el.resourceId) {
     const id = `id='${esc(el.resourceId)}'`;
-    const { ordinal, count } = duplicatePosition(el, all, (e) => e.resourceId);
-    if (count > 1) {
-      // Ambiguous id - qualify by position so the right control is hit. `idx`
-      // is 1-based in UiPath, `instance()` 0-based in UiAutomator.
+    // A bare (non package-qualified) id must not use Appium's `id` strategy:
+    // it prefixes the app package when the value has no ":id/", so a hybrid
+    // testID like "modal-primary-action" is looked up as
+    // "<package>:id/modal-primary-action" and never matches - the element is
+    // on screen, yet the tap fails with "could not be located".
+    // UiSelector().resourceId() matches the attribute exactly.
+    const bare = !el.resourceId.includes(":id/");
+    const group = all?.filter((e) => e.resourceId === el.resourceId) ?? [el];
+
+    if (group.length > 1) {
+      // Prefer a real attribute over a position. The field's own name is in
+      // the stable part of its description, so match on that.
+      const mine = stableDescription(el);
+      const unique =
+        mine !== undefined &&
+        group.filter((e) => stableDescription(e) === mine).length === 1;
+      if (unique) {
+        return {
+          platform: "Android",
+          kind: "mobile",
+          // Wildcard: everything after the field name is its current value.
+          mbl: parts(cls, id, `accessibilityId='${esc(mine)}*'`),
+          strategy: "-android uiautomator",
+          locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}").descriptionStartsWith("${uiaLit(mine)}")`,
+        };
+      }
+      // Nothing distinguishes them but position.
+      const { ordinal } = duplicatePosition(el, all, (e) => e.resourceId);
       return {
         platform: "Android",
         kind: "mobile",
-        mbl: `<mbl ${id} idx='${ordinal + 1}' />`,
+        mbl: parts(cls, id, `idx='${ordinal + 1}'`),
         strategy: "-android uiautomator",
-        locator: `new UiSelector().resourceId("${el.resourceId.replace(/"/g, '\\"')}").instance(${ordinal})`,
+        locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}").instance(${ordinal})`,
+      };
+    }
+
+    // Unique id. Include the label when there is one - it documents which
+    // control this is without being needed to find it.
+    const label = !el.contentDesc && el.text ? `text='${esc(el.text)}'` : "";
+    if (bare) {
+      return {
+        platform: "Android",
+        kind: "mobile",
+        mbl: parts(cls, id, label),
+        strategy: "-android uiautomator",
+        locator: `new UiSelector().resourceId("${uiaLit(el.resourceId)}")`,
       };
     }
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: `<mbl ${id} />`,
+      mbl: parts(cls, id, label),
       strategy: "id",
       locator: el.resourceId,
     };
   }
   if (el.contentDesc) {
+    const stable = stableDescription(el);
+    // A description carrying a live value is matched on its stable prefix only.
+    const volatile = stable !== undefined && stable !== el.contentDesc.trim();
+    if (volatile && stable) {
+      return {
+        platform: "Android",
+        kind: "mobile",
+        mbl: parts(cls, `accessibilityId='${esc(stable)}*'`),
+        strategy: "-android uiautomator",
+        locator: `new UiSelector().descriptionStartsWith("${uiaLit(stable)}")`,
+      };
+    }
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: `<mbl accessibilityId='${esc(el.contentDesc)}' />`,
+      mbl: parts(cls, `accessibilityId='${esc(el.contentDesc)}'`),
       strategy: "accessibility id",
       locator: el.contentDesc,
     };
@@ -165,17 +237,19 @@ function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector 
     return {
       platform: "Android",
       kind: "mobile",
-      mbl: `<mbl text='${esc(el.text)}' />`,
+      mbl: parts(cls, `text='${esc(el.text)}'`),
       strategy: "-android uiautomator",
-      locator: `new UiSelector().text("${el.text.replace(/"/g, '\\"')}")`,
+      locator: `new UiSelector().text("${uiaLit(el.text)}")`,
     };
   }
+  // Nothing but a class name. This matches many elements, so the orchestrator
+  // taps such a target by its bounds instead of by selector.
   return {
     platform: "Android",
     kind: "mobile",
-    mbl: `<mbl android:className='${esc(el.className)}' />`,
+    mbl: parts(cls),
     strategy: "-android uiautomator",
-    locator: `new UiSelector().className("${el.className}")`,
+    locator: `new UiSelector().className("${uiaLit(el.className)}")`,
   };
 }
 

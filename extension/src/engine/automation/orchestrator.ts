@@ -9,6 +9,7 @@ import type {
 } from "../types.js";
 import type { DeviceDriver } from "./driver.js";
 import { buildSelector } from "../workflow/selectors.js";
+import { androidBoundsCenter } from "./pageModel.js";
 import { planActionHeuristic, planActionWithLlm, screenMatches, verifyAssertion } from "../uipath/planner.js";
 import { getRunControl, type RetryChoice } from "./runControl.js";
 import type { ResolvedToken } from "../uipath/auth.js";
@@ -36,6 +37,89 @@ function labelForLog(el: UiElement): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/*
+ * Android system permission dialogs.
+ *
+ * These belong to the OS, not the app under test, and they sit on top of it -
+ * so while one is up, NOTHING of the app is on screen and every step fails
+ * with "element not found" no matter how good its selector is. Android 13+
+ * prompts for notifications on first launch, and `autoGrantPermissions` does
+ * not cover it (verified on a real device: the dialog was still up 25s in,
+ * with autoGrantPermissions set).
+ *
+ * Prompts also queue - notifications, then location - so dismissal repeats.
+ */
+const PERMISSION_DIALOG_MARKERS = [
+  "permissioncontroller:id/",
+  "packageinstaller:id/permission",
+];
+
+// Most-permissive-first: prefer a full grant, then a foreground/one-time grant,
+// so a location prompt does not silently become "denied" and break the app.
+const PERMISSION_ALLOW_IDS = [
+  "com.android.permissioncontroller:id/permission_allow_button",
+  "com.android.packageinstaller:id/permission_allow_button",
+  "com.android.permissioncontroller:id/permission_allow_foreground_only_button",
+  "com.android.permissioncontroller:id/permission_allow_one_time_button",
+];
+
+function isPermissionDialog(elements: UiElement[]): boolean {
+  return elements.some((e) =>
+    PERMISSION_DIALOG_MARKERS.some((m) => (e.resourceId ?? "").includes(m)),
+  );
+}
+
+/**
+ * Clear any stacked system permission dialogs and return the app's own screen.
+ * Returns the elements to plan against - re-captured when a dialog was cleared.
+ */
+async function clearPermissionDialogs(
+  driver: DeviceDriver,
+  elements: UiElement[],
+  emit: (event: RunEvent) => void,
+  maxPrompts = 4,
+): Promise<UiElement[]> {
+  let current = elements;
+  for (let i = 0; i < maxPrompts && isPermissionDialog(current); i += 1) {
+    const allow = current.find((e) => PERMISSION_ALLOW_IDS.includes(e.resourceId ?? ""));
+    if (!allow) {
+      emit({
+        type: "log",
+        level: "warn",
+        message:
+          "A system permission dialog is on screen but its Allow button was not found - the app is blocked behind it.",
+        at: Date.now(),
+      });
+      return current;
+    }
+    const prompt = current.find((e) => (e.resourceId ?? "").endsWith("permission_message"))?.text;
+    emit({
+      type: "log",
+      level: "info",
+      message: `Android permission dialog${prompt ? ` - "${prompt}"` : ""}: tapping "${
+        allow.text || "Allow"
+      }" so the app is reachable.`,
+      at: Date.now(),
+    });
+    try {
+      await driver.tap(buildSelector(allow, current));
+    } catch (error) {
+      emit({
+        type: "log",
+        level: "warn",
+        message: `Could not dismiss the permission dialog: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        at: Date.now(),
+      });
+      return current;
+    }
+    await delay(1200);
+    current = await driver.captureElements();
+  }
+  return current;
 }
 
 // Poll the device screen on an interval and emit it as a live frame, so the UI
@@ -172,7 +256,13 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
       const failed = outcome === "failed" || outcome === "needs-attention";
       if (!failed || !control.pauseOnFailure || control.stopped) break;
 
-      const candidates = await driver.captureElements().catch(() => [] as UiElement[]);
+      // Clear any OS permission dialog first: otherwise the operator is asked
+      // to choose from the dialog's buttons rather than the app's own screen,
+      // and whatever they pick cannot be found once the dialog goes away.
+      const candidates = await driver
+        .captureElements()
+        .then((els) => clearPermissionDialogs(driver, els, emit))
+        .catch(() => [] as UiElement[]);
       const choice = await pauseHere(
         session,
         step,
@@ -362,6 +452,9 @@ async function runStep(ctx: {
   };
 
   let elements = await driver.captureElements();
+  // An OS permission dialog covers the app entirely, so clear it before
+  // planning - otherwise the planner reasons about the dialog, not the app.
+  elements = await clearPermissionDialogs(driver, elements, emit);
   let action = await planOnce(elements);
 
   // Operator override: keep the planned action type/text, but target exactly
@@ -550,6 +643,46 @@ async function runStep(ctx: {
     // Capture a screenshot cropped to just this element (the "field" image).
     const shot = await driver.captureElementShot(selector);
     if (shot) step.elementShot = shot;
+
+    /*
+     * An operator can pick an element that carries NO stable identifier - the
+     * candidate list includes anything clickable, and some app layouts expose
+     * plain ViewGroups. buildSelector can only fall back to the class name
+     * there, which on a real screen matched 15 elements: the driver then acts
+     * on the first one, not the one that was chosen, or fails outright.
+     *
+     * The chosen element's position is unambiguous, so tap the centre of its
+     * bounds instead. Only for taps, and only when there is no identifier -
+     * a selector is still preferable whenever one can be built.
+     */
+    if (
+      forceElement &&
+      action.actionType === "tap" &&
+      !hasIdentifier(target) &&
+      driver.target === "app"
+    ) {
+      const centre = androidBoundsCenter(target.bounds);
+      if (centre) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `"${labelForLog(target)}" has no stable identifier (its class alone matches many elements), so tapping its position (${centre.x}, ${centre.y}).`,
+          at: Date.now(),
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "applied",
+          detail: `Tapped at (${centre.x}, ${centre.y}).`,
+          durationMs: Date.now() - t0,
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+    }
+
     await executeAction(driver, action, selector, step, emit);
     step.afterScreenshot = await driver.takeScreenshot();
     return;

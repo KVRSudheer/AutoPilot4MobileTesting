@@ -17,6 +17,10 @@ export interface DeviceDriver {
   currentUrl(): Promise<string>; // browser target: the page the browser is on ("" if unknown)
   takeScreenshot(): Promise<string>; // full image src (data: URL)
   tap(selector: MobileSelector): Promise<void>;
+  // Tap a screen coordinate. Used when an element carries no stable identifier,
+  // so any selector built for it would match many elements and hit the wrong
+  // one; its position is unambiguous. Native only.
+  tapAt(x: number, y: number): Promise<void>;
   setText(selector: MobileSelector, text: string): Promise<void>;
   swipe(direction: SwipeDirection): Promise<void>;
   pressKey(key: string): Promise<void>;
@@ -269,6 +273,16 @@ export class WebdriverDriver implements DeviceDriver {
     const element = await this.el(selector);
     await element.waitForExist({ timeout: 10_000 });
     await element.click();
+  }
+
+  async tapAt(x: number, y: number): Promise<void> {
+    await this.browser
+      .action("pointer", { parameters: { pointerType: "touch" } })
+      .move({ duration: 0, x: Math.round(x), y: Math.round(y) })
+      .down()
+      .pause(80)
+      .up()
+      .perform();
   }
 
   async setText(selector: MobileSelector, text: string): Promise<void> {

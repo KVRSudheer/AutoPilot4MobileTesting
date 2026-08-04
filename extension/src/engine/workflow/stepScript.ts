@@ -86,9 +86,23 @@ function repeatRandom(n: number, alphabet: string): string {
  *   Enter the date of birth {{dob}}          (always 18+ years old)
  *   Enter today's date {{date:yyyy-MM-dd}}
  *
+ * Card payment fields:
+ *   {{nameOnCard}}                           (e.g. "Lerato Pillay")
+ *   {{cardNumber}}                           (Visa test PAN 4111…1111 by
+ *                                             default; pass another as
+ *                                             {{cardNumber:5555555555554444}})
+ *   {{expiry}}                               (3 years out, MM/yy)
+ *   {{cvv}}                                  (3 digits; {{cvv:4}} for Amex)
+ *
  * The same token text expands to the same value for the whole run, so an email
  * used in two steps matches. Add a #suffix to force a distinct value:
  * {{digits:7}} and {{digits:7#other}}.
+ *
+ * Tokens are for data the test INVENTS. A value the test has to match against
+ * real app content - a product to search for, an item to pick from a list - has
+ * no generatable form, so write it literally ("Enter Woolworths Milk 2L …").
+ * An unknown token is left visible rather than guessed at, so it will be typed
+ * as raw "{{…}}" text if you use one.
  */
 /** A token that was expanded, so exports can regenerate it themselves. */
 export interface GeneratedValue {
@@ -176,6 +190,26 @@ export function expandTokensWithData(lines: string[]): {
       case "dob":
         // A date of birth guaranteed to be 18+: {{dob}} or {{dob:yyyy-MM-dd}}
         value = formatDate(adultBirthDate(), arg || "dd/MM/yyyy");
+        break;
+      case "nameoncard":
+        value = `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
+        break;
+      case "cardnumber":
+        // A payment sandbox only accepts its published test PANs - a randomly
+        // generated Luhn-valid number is declined - so default to the standard
+        // Visa test card and let a specific one be passed as the argument:
+        // {{cardnumber}} or {{cardnumber:5555555555554444}}
+        value = arg || "4111111111111111";
+        break;
+      case "expiry": {
+        // Comfortably in the future so the card never expires mid-suite.
+        const later = new Date();
+        later.setFullYear(later.getFullYear() + 3);
+        value = formatDate(later, arg || "MM/yy");
+        break;
+      }
+      case "cvv":
+        value = repeatRandom(n || 3, "0123456789");
         break;
       default:
         value = token; // unknown token - leave it visible rather than guessing
