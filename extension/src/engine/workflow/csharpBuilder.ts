@@ -68,6 +68,13 @@ function generatorCall(g: GeneratedValue): string {
       return `DateTime.Today.AddYears(3).ToString(${csString(g.arg || "MM/yy")})`;
     case "cvv":
       return `RandomDigits(${Number(g.arg) || 3})`;
+    case "oneof":
+    case "pick": {
+      const options = g.arg.split("|").map((o) => o.trim()).filter(Boolean);
+      if (options.length === 0) return csString(g.value);
+      if (options.length === 1) return csString(options[0]);
+      return `PickOne(${options.map(csString).join(", ")})`;
+    }
     default:
       return csString(g.value);
   }
@@ -101,6 +108,10 @@ export const GENERATOR_SOURCE: Record<string, string[]> = {
   RandomLastName: [
     'private static readonly string[] _lastNames = { "Naidoo", "Botha", "Mkhize", "Pillay", "Venter", "Dlamini", "Fourie", "Khumalo", "Jacobs", "Nel" };',
     'private static string RandomLastName() => _lastNames[_rng.Next(_lastNames.Length)];',
+  ],
+  PickOne: [
+    'private static string PickOne(params string[] options) =>',
+    '    options[_rng.Next(options.Length)];',
   ],
   RandomDateOfBirth: [
     '// Always 18+ today: pick a day in the window ending the day before the',

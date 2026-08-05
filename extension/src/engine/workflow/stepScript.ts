@@ -98,11 +98,17 @@ function repeatRandom(n: number, alphabet: string): string {
  * used in two steps matches. Add a #suffix to force a distinct value:
  * {{digits:7}} and {{digits:7#other}}.
  *
- * Tokens are for data the test INVENTS. A value the test has to match against
- * real app content - a product to search for, an item to pick from a list - has
- * no generatable form, so write it literally ("Enter Woolworths Milk 2L …").
- * An unknown token is left visible rather than guessed at, so it will be typed
- * as raw "{{…}}" text if you use one.
+ * Tokens INVENT data - they are not variable substitution, so {{ProductName}}
+ * is not a thing: there is no "ProductName" kind to generate, and an unknown
+ * token is left visible rather than guessed at, so it gets typed as raw
+ * "{{…}}" text.
+ *
+ * For a value that must match real app content (a product to search for, an
+ * item to pick from a list), supply the candidates and let the run vary
+ * between them:
+ *
+ *   Enter the {{oneOf:Nescafe Gold 200g|Jacobs Kronung 200g}} into the …
+ *   Tap the {{oneOf:60 MIN}} button          <- one value = a named constant
  */
 /** A token that was expanded, so exports can regenerate it themselves. */
 export interface GeneratedValue {
@@ -211,6 +217,26 @@ export function expandTokensWithData(lines: string[]): {
       case "cvv":
         value = repeatRandom(n || 3, "0123456789");
         break;
+      case "oneof":
+      case "pick": {
+        /*
+         * Pick one of the values written in the step. For data that must match
+         * real app content - a product to search for, a store, a payment
+         * method - there is nothing to invent: the value has to exist, so the
+         * test supplies the candidates and the run varies between them.
+         *
+         *   Enter the {{oneOf:Nescafe Gold 200g|Jacobs Kronung 200g}} into …
+         *
+         * A single value makes it a plain named constant, which is handy for
+         * keeping an environment-specific value in one place.
+         */
+        const options = arg
+          .split("|")
+          .map((o) => o.trim())
+          .filter(Boolean);
+        value = options.length ? pick(options) : token;
+        break;
+      }
       default:
         value = token; // unknown token - leave it visible rather than guessing
     }

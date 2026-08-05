@@ -4486,6 +4486,24 @@ async function runStep(ctx) {
   if (forceElement) {
     elements = forceContext && forceContext.length ? forceContext : elements;
     const at = elements.findIndex((e) => e.index === forceElement.index);
+    if (action.actionType === "assertExists") {
+      const intent = planActionHeuristic(step.description, elements);
+      if (intent.actionType !== "assertExists") {
+        emit({
+          type: "log",
+          level: "info",
+          message: `The planner had reported the target missing; the step asks to ${intent.actionType === "setText" ? "type" : intent.actionType}, so performing that on the chosen element.`,
+          at: Date.now()
+        });
+        action = {
+          ...action,
+          actionType: intent.actionType,
+          text: intent.text ?? action.text,
+          direction: intent.direction ?? action.direction,
+          key: intent.key ?? action.key
+        };
+      }
+    }
     action = {
       ...action,
       targetIndex: at >= 0 ? at : forceElement.index,
@@ -4604,8 +4622,30 @@ async function runStep(ctx) {
     step.selector = selector;
     if (forceElement && !await driver.exists(selector)) {
       const label = labelForLog(forceElement);
+      const fresh = await driver.captureElements().catch(() => []);
+      const still = fresh.find((e) => sameElement(e, forceElement));
+      const centre = still ? androidBoundsCenter(still.bounds) : null;
+      if (still && centre && action.actionType === "tap" && driver.target === "app") {
+        emit({
+          type: "log",
+          level: "warn",
+          message: `"${label}" is on screen but its selector (${selector.strategy}: ${selector.locator}) did not resolve - tapping its position (${centre.x}, ${centre.y}) instead.`,
+          at: Date.now()
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "applied",
+          detail: `Selector did not resolve; tapped at (${centre.x}, ${centre.y}).`,
+          durationMs: Date.now() - t0
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
       step.status = "needs-attention";
-      step.message = `"${label}" is no longer on screen - it changed while the run was paused. Pick again from the current screen.`;
+      step.message = still ? `"${label}" is on screen but neither its selector (${selector.strategy}: ${selector.locator}) nor its position could be used.` : `"${label}" is no longer on screen - it changed while the run was paused. Pick again from the current screen.`;
       step.outcome = {
         dispatched: false,
         effect: "no-change",
@@ -4646,6 +4686,10 @@ async function runStep(ctx) {
   }
   await executeAction(driver, action, void 0, step, emit);
   step.afterScreenshot = await driver.takeScreenshot();
+}
+function sameElement(candidate, ref) {
+  const same = (a, b) => (a ?? "") === (b ?? "");
+  return same(candidate.resourceId, ref.resourceId) && same(candidate.contentDesc, ref.contentDesc) && same(candidate.text, ref.text) && same(candidate.className, ref.className);
 }
 function hasIdentifier(el) {
   const has = (s) => Boolean(s && s.trim());
@@ -5255,6 +5299,13 @@ function generatorCall(g) {
       return `DateTime.Today.AddYears(3).ToString(${csString(g.arg || "MM/yy")})`;
     case "cvv":
       return `RandomDigits(${Number(g.arg) || 3})`;
+    case "oneof":
+    case "pick": {
+      const options = g.arg.split("|").map((o) => o.trim()).filter(Boolean);
+      if (options.length === 0) return csString(g.value);
+      if (options.length === 1) return csString(options[0]);
+      return `PickOne(${options.map(csString).join(", ")})`;
+    }
     default:
       return csString(g.value);
   }
@@ -5286,6 +5337,10 @@ var GENERATOR_SOURCE = {
   RandomLastName: [
     'private static readonly string[] _lastNames = { "Naidoo", "Botha", "Mkhize", "Pillay", "Venter", "Dlamini", "Fourie", "Khumalo", "Jacobs", "Nel" };',
     "private static string RandomLastName() => _lastNames[_rng.Next(_lastNames.Length)];"
+  ],
+  PickOne: [
+    "private static string PickOne(params string[] options) =>",
+    "    options[_rng.Next(options.Length)];"
   ],
   RandomDateOfBirth: [
     "// Always 18+ today: pick a day in the window ending the day before the",
@@ -6489,6 +6544,12 @@ function expandTokensWithData(lines) {
       case "cvv":
         value = repeatRandom(n || 3, "0123456789");
         break;
+      case "oneof":
+      case "pick": {
+        const options = arg.split("|").map((o) => o.trim()).filter(Boolean);
+        value = options.length ? pick(options) : token;
+        break;
+      }
       default:
         value = token;
     }

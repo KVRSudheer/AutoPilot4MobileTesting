@@ -462,6 +462,36 @@ async function runStep(ctx: {
   if (forceElement) {
     elements = forceContext && forceContext.length ? forceContext : elements;
     const at = elements.findIndex((e) => e.index === forceElement.index);
+
+    /*
+     * When the planner cannot find a target it reports the fact, which comes
+     * back as an assertExists ("There is no 'Add New Card' button visible").
+     * Inheriting that verdict made an operator's pick do nothing: the step
+     * merely re-checked that the chosen element exists and never touched it.
+     *
+     * Picking a target on a step that asks for an interaction IS the intent to
+     * interact, so re-derive the action from the step text. Only assertExists
+     * is overridden - a correctly planned tap/setText/swipe is left alone.
+     */
+    if (action.actionType === "assertExists") {
+      const intent = planActionHeuristic(step.description, elements);
+      if (intent.actionType !== "assertExists") {
+        emit({
+          type: "log",
+          level: "info",
+          message: `The planner had reported the target missing; the step asks to ${intent.actionType === "setText" ? "type" : intent.actionType}, so performing that on the chosen element.`,
+          at: Date.now(),
+        });
+        action = {
+          ...action,
+          actionType: intent.actionType,
+          text: intent.text ?? action.text,
+          direction: intent.direction ?? action.direction,
+          key: intent.key ?? action.key,
+        };
+      }
+    }
+
     action = {
       ...action,
       targetIndex: at >= 0 ? at : forceElement.index,
@@ -619,16 +649,50 @@ async function runStep(ctx: {
     step.element = target;
     step.selector = selector;
 
-    // An operator-chosen target came from a snapshot taken when the run
-    // paused. The screen can move on in the meantime (a modal auto-dismisses,
-    // a toast disappears), and the normal recovery - scroll and hunt - is both
-    // useless and slow for that case, and can itself change state. Confirm the
-    // element is still there and otherwise fail immediately with an actionable
-    // message; pause-on-failure then re-pauses with a FRESH candidate list.
+    /*
+     * An operator-chosen target came from a snapshot taken when the run paused,
+     * and the screen can move on in the meantime (a modal auto-dismisses, a
+     * toast disappears). So the selector is checked first.
+     *
+     * But "the selector did not resolve" is NOT the same as "the element is
+     * gone", and conflating them produced the worst failure this tool had:
+     * telling the operator the control they could plainly see was "no longer on
+     * screen". So when the selector misses, look for the same element in a
+     * FRESH capture. If it is still there, the selector is at fault, not the
+     * screen - tap its position, which cannot be misbuilt. Only when the
+     * element is really absent is the step failed, and then the message says so
+     * truthfully.
+     */
     if (forceElement && !(await driver.exists(selector))) {
       const label = labelForLog(forceElement);
+      const fresh = await driver.captureElements().catch(() => [] as UiElement[]);
+      const still = fresh.find((e) => sameElement(e, forceElement));
+      const centre = still ? androidBoundsCenter(still.bounds) : null;
+
+      if (still && centre && action.actionType === "tap" && driver.target === "app") {
+        emit({
+          type: "log",
+          level: "warn",
+          message: `"${label}" is on screen but its selector (${selector.strategy}: ${selector.locator}) did not resolve - tapping its position (${centre.x}, ${centre.y}) instead.`,
+          at: Date.now(),
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "applied",
+          detail: `Selector did not resolve; tapped at (${centre.x}, ${centre.y}).`,
+          durationMs: Date.now() - t0,
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+
       step.status = "needs-attention";
-      step.message = `"${label}" is no longer on screen - it changed while the run was paused. Pick again from the current screen.`;
+      step.message = still
+        ? `"${label}" is on screen but neither its selector (${selector.strategy}: ${selector.locator}) nor its position could be used.`
+        : `"${label}" is no longer on screen - it changed while the run was paused. Pick again from the current screen.`;
       step.outcome = {
         dispatched: false,
         effect: "no-change",
@@ -691,6 +755,23 @@ async function runStep(ctx: {
   // Non-targeted action (a real scroll/swipe gesture step, or pressKey).
   await executeAction(driver, action, undefined, step, emit);
   step.afterScreenshot = await driver.takeScreenshot();
+}
+
+/**
+ * Is this the same on-screen control as `ref`, in a capture taken later?
+ *
+ * Indices shift between captures, so identity is compared on the attributes the
+ * app controls. Used to tell "the selector failed" apart from "the element is
+ * gone" when an operator-chosen target does not resolve.
+ */
+function sameElement(candidate: UiElement, ref: UiElement): boolean {
+  const same = (a?: string, b?: string) => (a ?? "") === (b ?? "");
+  return (
+    same(candidate.resourceId, ref.resourceId) &&
+    same(candidate.contentDesc, ref.contentDesc) &&
+    same(candidate.text, ref.text) &&
+    same(candidate.className, ref.className)
+  );
 }
 
 // An element is a confident target only if it carries some stable identifier;
