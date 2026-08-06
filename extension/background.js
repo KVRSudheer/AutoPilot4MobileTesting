@@ -2985,12 +2985,19 @@ function asBool(v) {
   if (v === void 0) return void 0;
   return v === "true";
 }
-function androidBoundsCenter(bounds) {
+function boundsCenter(bounds) {
   if (!bounds) return null;
-  const m = bounds.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
-  if (!m) return null;
-  const [, x1, y1, x2, y2] = m.map(Number);
-  return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
+  const android = bounds.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+  if (android) {
+    const [, x1, y1, x2, y2] = android.map(Number);
+    return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
+  }
+  const parts = bounds.split(",").map((p) => Number(p.trim()));
+  if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+    const [x, y, width, height] = parts;
+    return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
+  }
+  return null;
 }
 function isInteresting(el) {
   return Boolean(
@@ -4674,7 +4681,7 @@ async function runStep(ctx) {
       const label = labelForLog(forceElement);
       const fresh = await driver.captureElements().catch(() => []);
       const still = fresh.find((e) => sameElement(e, forceElement));
-      const centre = still ? androidBoundsCenter(still.bounds) : null;
+      const centre = still ? boundsCenter(still.bounds) : null;
       if (still && centre && action.actionType === "tap" && driver.target === "app") {
         emit({
           type: "log",
@@ -4709,7 +4716,7 @@ async function runStep(ctx) {
     const shot = await driver.captureElementShot(selector);
     if (shot) step.elementShot = shot;
     if (forceElement && action.actionType === "tap" && !hasIdentifier(target2) && driver.target === "app") {
-      const centre = androidBoundsCenter(target2.bounds);
+      const centre = boundsCenter(target2.bounds);
       if (centre) {
         emit({
           type: "log",
@@ -4742,7 +4749,7 @@ function isEditableElement(el) {
   return tag.endsWith(".edittext") || tag === "input" || tag === "textarea" || /edit|textfield|searchfield|textbox/i.test(el.className || "");
 }
 function centreOf(el) {
-  return androidBoundsCenter(el.bounds);
+  return boundsCenter(el.bounds);
 }
 function inputForLabel(label, all) {
   const from = centreOf(label);

@@ -36,14 +36,32 @@ function asBool(v: string | undefined): boolean | undefined {
   return v === "true";
 }
 
-// Centre point from an Android bounds string "[x1,y1][x2,y2]".
-export function androidBoundsCenter(bounds?: string): { x: number; y: number } | null {
+/**
+ * Centre point of an element, from either platform's bounds format.
+ *
+ * Android reports "[x1,y1][x2,y2]"; iOS is captured above as
+ * "x,y,width,height". Everything that works from an element's POSITION -
+ * tapping a control no selector can single out, matching a caption to the
+ * field beside it - depends on this, so it has to understand both. Parsing
+ * only the Android form would leave those behaviours silently dead on iOS.
+ */
+export function boundsCenter(bounds?: string): { x: number; y: number } | null {
   if (!bounds) return null;
-  const m = bounds.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
-  if (!m) return null;
-  const [, x1, y1, x2, y2] = m.map(Number);
-  return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
+  const android = bounds.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+  if (android) {
+    const [, x1, y1, x2, y2] = android.map(Number);
+    return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
+  }
+  const parts = bounds.split(",").map((p) => Number(p.trim()));
+  if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+    const [x, y, width, height] = parts;
+    return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
+  }
+  return null;
 }
+
+/** @deprecated Use {@link boundsCenter}, which also handles iOS. */
+export const androidBoundsCenter = boundsCenter;
 
 function isInteresting(el: Omit<UiElement, "index">): boolean {
   return Boolean(

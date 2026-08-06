@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 import type { DeviceDriver } from "./driver.js";
 import { buildSelector } from "../workflow/selectors.js";
-import { androidBoundsCenter } from "./pageModel.js";
+import { boundsCenter } from "./pageModel.js";
 import { planActionHeuristic, planActionWithLlm, screenMatches, verifyAssertion } from "../uipath/planner.js";
 import { getRunControl, type RetryChoice } from "./runControl.js";
 import type { ResolvedToken } from "../uipath/auth.js";
@@ -724,7 +724,7 @@ async function runStep(ctx: {
       const label = labelForLog(forceElement);
       const fresh = await driver.captureElements().catch(() => [] as UiElement[]);
       const still = fresh.find((e) => sameElement(e, forceElement));
-      const centre = still ? androidBoundsCenter(still.bounds) : null;
+      const centre = still ? boundsCenter(still.bounds) : null;
 
       if (still && centre && action.actionType === "tap" && driver.target === "app") {
         emit({
@@ -782,7 +782,7 @@ async function runStep(ctx: {
       !hasIdentifier(target) &&
       driver.target === "app"
     ) {
-      const centre = androidBoundsCenter(target.bounds);
+      const centre = boundsCenter(target.bounds);
       if (centre) {
         emit({
           type: "log",
@@ -826,7 +826,7 @@ function isEditableElement(el: UiElement): boolean {
 }
 
 function centreOf(el: UiElement): { x: number; y: number } | null {
-  return androidBoundsCenter(el.bounds);
+  return boundsCenter(el.bounds);
 }
 
 /**
