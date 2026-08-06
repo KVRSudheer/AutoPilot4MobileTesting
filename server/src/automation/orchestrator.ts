@@ -511,6 +511,12 @@ async function runStep(ctx: {
   const resolvedTarget = (): UiElement | undefined => {
     if (action.targetIndex < 0 || action.targetIndex >= elements.length) return undefined;
     const el = elements[action.targetIndex];
+    // The identifier rule exists to stop the PLANNER acting on a guess. An
+    // operator pointing at a specific control is not guessing, and the controls
+    // that most need pointing at - a web-view input, a bare ViewGroup - are
+    // exactly the ones carrying no identifier. Their position is acted on
+    // instead, further down.
+    if (forceElement) return el;
     return hasIdentifier(el) ? el : undefined;
   };
   const unresolved = (): boolean => {
@@ -519,7 +525,16 @@ async function runStep(ctx: {
     return false;
   };
 
-  let tries = 0;
+  /*
+   * An operator's pick is the answer, not a suggestion.
+   *
+   * The search below re-reads the screen and RE-PLANS, which would throw the
+   * choice away and go back to whatever the planner thinks. Worse, a field with
+   * no identifier never counts as "resolved", so choosing one sent the run into
+   * settle-and-scroll and then failed - after the operator had already pointed
+   * straight at it. When a target has been chosen, act on that target.
+   */
+  let tries = forceElement ? MAX_SEARCH_TRIES : 0;
   while (unresolved() && tries < MAX_SEARCH_TRIES) {
     tries += 1;
     if (tries <= 2 && action.actionType !== "swipe") {
@@ -707,6 +722,36 @@ async function runStep(ctx: {
     }
 
     /*
+     * A control carrying no identifier cannot be reached by any selector - its
+     * class alone matches every sibling, so the driver acts on the first one
+     * rather than this one (on a real screen, 15 of them). Its POSITION is
+     * unambiguous, so tap that, and do it before any selector work: the
+     * chosen element is the answer, so nothing should re-validate it.
+     */
+    if (action.actionType === "tap" && !hasIdentifier(target) && driver.target === "app") {
+      const centre = centreOf(target);
+      if (centre) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `"${labelForLog(target)}" carries no identifier, so tapping its position (${centre.x}, ${centre.y}).`,
+          at: Date.now(),
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "applied",
+          detail: `Tapped at (${centre.x}, ${centre.y}).`,
+          durationMs: Date.now() - t0,
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+    }
+
+    /*
      * An operator-chosen target came from a snapshot taken when the run paused,
      * and the screen can move on in the meantime (a modal auto-dismisses, a
      * toast disappears). So the selector is checked first.
@@ -764,45 +809,6 @@ async function runStep(ctx: {
     // Capture a screenshot cropped to just this element (the "field" image).
     const shot = await driver.captureElementShot(selector);
     if (shot) step.elementShot = shot;
-
-    /*
-     * An operator can pick an element that carries NO stable identifier - the
-     * candidate list includes anything clickable, and some app layouts expose
-     * plain ViewGroups. buildSelector can only fall back to the class name
-     * there, which on a real screen matched 15 elements: the driver then acts
-     * on the first one, not the one that was chosen, or fails outright.
-     *
-     * The chosen element's position is unambiguous, so tap the centre of its
-     * bounds instead. Only for taps, and only when there is no identifier -
-     * a selector is still preferable whenever one can be built.
-     */
-    if (
-      forceElement &&
-      action.actionType === "tap" &&
-      !hasIdentifier(target) &&
-      driver.target === "app"
-    ) {
-      const centre = boundsCenter(target.bounds);
-      if (centre) {
-        emit({
-          type: "log",
-          level: "info",
-          message: `"${labelForLog(target)}" has no stable identifier (its class alone matches many elements), so tapping its position (${centre.x}, ${centre.y}).`,
-          at: Date.now(),
-        });
-        const t0 = Date.now();
-        await driver.tapAt(centre.x, centre.y);
-        step.status = "passed";
-        step.outcome = {
-          dispatched: true,
-          effect: "applied",
-          detail: `Tapped at (${centre.x}, ${centre.y}).`,
-          durationMs: Date.now() - t0,
-        };
-        step.afterScreenshot = await driver.takeScreenshot();
-        return;
-      }
-    }
 
     await executeAction(driver, action, selector, step, emit);
     step.afterScreenshot = await driver.takeScreenshot();

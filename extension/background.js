@@ -4536,6 +4536,7 @@ async function runStep(ctx) {
   const resolvedTarget = () => {
     if (action.targetIndex < 0 || action.targetIndex >= elements.length) return void 0;
     const el = elements[action.targetIndex];
+    if (forceElement) return el;
     return hasIdentifier(el) ? el : void 0;
   };
   const unresolved = () => {
@@ -4543,7 +4544,7 @@ async function runStep(ctx) {
     if (action.actionType === "swipe" && !scrollStep) return true;
     return false;
   };
-  let tries = 0;
+  let tries = forceElement ? MAX_SEARCH_TRIES : 0;
   while (unresolved() && tries < MAX_SEARCH_TRIES) {
     tries += 1;
     if (tries <= 2 && action.actionType !== "swipe") {
@@ -4677,6 +4678,28 @@ async function runStep(ctx) {
         return;
       }
     }
+    if (action.actionType === "tap" && !hasIdentifier(target2) && driver.target === "app") {
+      const centre = centreOf(target2);
+      if (centre) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `"${labelForLog(target2)}" carries no identifier, so tapping its position (${centre.x}, ${centre.y}).`,
+          at: Date.now()
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "applied",
+          detail: `Tapped at (${centre.x}, ${centre.y}).`,
+          durationMs: Date.now() - t0
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+    }
     if (forceElement && !await driver.exists(selector)) {
       const label = labelForLog(forceElement);
       const fresh = await driver.captureElements().catch(() => []);
@@ -4715,28 +4738,6 @@ async function runStep(ctx) {
     }
     const shot = await driver.captureElementShot(selector);
     if (shot) step.elementShot = shot;
-    if (forceElement && action.actionType === "tap" && !hasIdentifier(target2) && driver.target === "app") {
-      const centre = boundsCenter(target2.bounds);
-      if (centre) {
-        emit({
-          type: "log",
-          level: "info",
-          message: `"${labelForLog(target2)}" has no stable identifier (its class alone matches many elements), so tapping its position (${centre.x}, ${centre.y}).`,
-          at: Date.now()
-        });
-        const t0 = Date.now();
-        await driver.tapAt(centre.x, centre.y);
-        step.status = "passed";
-        step.outcome = {
-          dispatched: true,
-          effect: "applied",
-          detail: `Tapped at (${centre.x}, ${centre.y}).`,
-          durationMs: Date.now() - t0
-        };
-        step.afterScreenshot = await driver.takeScreenshot();
-        return;
-      }
-    }
     await executeAction(driver, action, selector, step, emit);
     step.afterScreenshot = await driver.takeScreenshot();
     return;
