@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "UiPath Mobile Test Autopilot Engine",
+  "version": "2.0.0",
+  "description": "Runs the Mobile Test Autopilot automation engine inside the browser: plans steps via the UiPath LLM Gateway, drives cloud devices, and generates UiPath workflows for the Coded App.",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.uipath.host/*",
+        "http://localhost:5174/*",
+        "http://127.0.0.1:5174/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "host_permissions": [
+    "https://*.uipath.com/*",
+    "https://*.browserstack.com/*",
+    "https://*.saucelabs.com/*",
+    "https://*.lambdatest.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}

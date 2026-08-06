@@ -7,12 +7,17 @@ import {
   CheckCircle2,
   CircleDot,
   Loader2,
+  Pause,
+  Play,
   RotateCcw,
+  SkipForward,
+  Square,
   TriangleAlert,
   XCircle,
 } from "lucide-react";
 import type { ActionOutcome, RunStatus, SessionState, StepResult, StepStatus } from "../../lib/types";
-import { useRunStream } from "../../lib/sse";
+import { useRunStream, type PausedState } from "../../lib/sse";
+import { controlRun } from "../../lib/api";
 import { Button, Card, DeviceFrame, Eyebrow, Pill } from "../ui";
 
 export function RunStep({
@@ -28,7 +33,19 @@ export function RunStep({
   onStatus?: (status: RunStatus) => void;
   onRerun?: () => void;
 }) {
-  const { session: live, steps, logs, finished, error, liveFrame } = useRunStream(session?.id ?? null);
+  const { session: live, steps, logs, finished, error, liveFrame, paused } =
+    useRunStream(session?.id ?? null);
+  // Pause automatically when a step doesn't pass, so it can be corrected.
+  const [pauseOnFailure, setPauseOnFailure] = useState(true);
+  const [controlError, setControlError] = useState<string | null>(null);
+
+  const control = (action: Parameters<typeof controlRun>[1], opts?: { targetIndex?: number; value?: boolean }) => {
+    if (!session) return;
+    setControlError(null);
+    void controlRun(session.id, action, opts).catch((e: unknown) =>
+      setControlError(e instanceof Error ? e.message : "Control request failed."),
+    );
+  };
   const current = live ?? session;
   const logRef = useRef<HTMLDivElement>(null);
   // Which step's screenshot to show. null = auto-follow the running/last step.
@@ -71,6 +88,12 @@ export function RunStep({
   const runningStep = steps.find((s) => s.status === "running");
   const passed = steps.filter((s) => s.status === "passed").length;
   const attention = steps.filter((s) => s.status === "needs-attention" || s.status === "failed").length;
+  const skipped = steps.filter((s) => s.status === "skipped").length;
+
+  // Until the device session is actually open we don't know whether this run
+  // is live or simulated - `mode` is only a placeholder until then, so don't
+  // claim either. Provisioning a real device takes a minute or more.
+  const connecting = current?.status === "created" || current?.status === "connecting";
 
   // Device frame follows the running step (or last with a shot) unless the
   // user clicked a specific step to inspect it.
@@ -104,8 +127,12 @@ export function RunStep({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Pill tone={current?.mode === "live" ? "blue" : "amber"}>
-              {current?.mode === "live" ? "Live device" : "Simulated device"}
+            <Pill tone={connecting ? "grey" : current?.mode === "live" ? "blue" : "amber"}>
+              {connecting
+                ? "Connecting…"
+                : current?.mode === "live"
+                  ? "Live device"
+                  : "Simulated device"}
             </Pill>
             <Pill tone={current?.llmLive ? "emerald" : "grey"}>
               {current?.llmLive ? "UiPath LLM Gateway" : "Heuristic planner"}
@@ -116,9 +143,42 @@ export function RunStep({
           </div>
         </div>
 
+        {!finished ? (
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#eceff1] pt-4 dark:border-[#28333c]">
+            <Button
+              variant="secondary"
+              onClick={() => control(paused ? "resume" : "pause")}
+              className="px-3 py-2 text-xs"
+            >
+              {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+              {paused ? "Resume" : "Pause"}
+            </Button>
+            <Button variant="secondary" onClick={() => control("stop")} className="px-3 py-2 text-xs">
+              <Square className="h-3.5 w-3.5" />
+              Stop
+            </Button>
+            <label className="ml-1 flex cursor-pointer items-center gap-2 text-xs text-[#667880] dark:text-[#9aabb4]">
+              <input
+                type="checkbox"
+                checked={pauseOnFailure}
+                onChange={(e) => {
+                  setPauseOnFailure(e.target.checked);
+                  control("pauseOnFailure", { value: e.target.checked });
+                }}
+                className="h-3.5 w-3.5 accent-[#FA4616]"
+              />
+              Pause on step failure
+            </label>
+            {controlError ? (
+              <span className="text-xs text-[#c0334b] dark:text-[#ff7d8a]">{controlError}</span>
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="mt-4 flex flex-wrap gap-2 text-xs">
           <Pill tone="emerald">{passed} passed</Pill>
           {attention > 0 ? <Pill tone="amber">{attention} need attention</Pill> : null}
+          {skipped > 0 ? <Pill tone="grey">{skipped} skipped</Pill> : null}
           <Pill tone="grey">
             {Math.min(current?.currentStep ?? 0, steps.length)} / {steps.length}
           </Pill>
@@ -132,15 +192,26 @@ export function RunStep({
         </div>
       ) : null}
 
+      {paused ? (
+        <PausedPanel
+          paused={paused}
+          onRetry={(targetIndex) => control("retry", { targetIndex })}
+          onSkip={() => control("skip")}
+          onStop={() => control("stop")}
+        />
+      ) : null}
+
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         <Card className="flex shrink-0 flex-col items-center p-5 lg:w-auto">
           <DeviceFrame
             src={shownShot}
             busy={!finished && !shownShot}
             placeholder={
-              current?.mode === "live"
-                ? `Connecting to ${current?.provider}… Provisioning a real device can take 1-3 minutes.`
-                : "Starting simulated device…"
+              connecting
+                ? `Provisioning a device on ${current?.provider ?? "the device cloud"}… a real device can take 1-3 minutes.`
+                : current?.mode === "live"
+                  ? `Connecting to ${current?.provider}…`
+                  : "Starting simulated device…"
             }
             caption={
               liveMode
@@ -200,6 +271,13 @@ export function RunStep({
           ) : (
             logs.map((line, i) => (
               <div key={i} className="flex gap-2">
+                {/* Wall-clock + elapsed-since-run-start, so step cost is visible. */}
+                <span className="shrink-0 tabular-nums text-[#546e7a]" title={new Date(line.at).toISOString()}>
+                  {clockTime(line.at)}
+                </span>
+                <span className="shrink-0 tabular-nums text-[#455a64]">
+                  {logs[0] ? `+${((line.at - logs[0].at) / 1000).toFixed(1)}s` : ""}
+                </span>
                 <span
                   className={
                     line.level === "error"
@@ -249,6 +327,105 @@ function pickScreenshot(steps: StepResult[]): string | undefined {
   return undefined;
 }
 
+// HH:MM:SS in the viewer's local time.
+function clockTime(at: number): string {
+  const d = new Date(at);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * Shown while a run is held at a pause point. Lists the elements read from the
+ * current screen so the operator can point the step at the right one and retry.
+ */
+function PausedPanel({
+  paused,
+  onRetry,
+  onSkip,
+  onStop,
+}: {
+  paused: PausedState;
+  onRetry: (targetIndex?: number) => void;
+  onSkip: () => void;
+  onStop: () => void;
+}) {
+  const [chosen, setChosen] = useState<number | null>(null);
+  const label = (el: PausedState["candidates"][number]): string =>
+    el.text || el.contentDesc || el.accessibilityId || el.name || el.placeholder ||
+    el.ariaLabel || el.resourceId || el.htmlId || el.testId || el.className || `#${el.index}`;
+  const ident = (el: PausedState["candidates"][number]): string =>
+    el.resourceId || el.accessibilityId || el.htmlId || el.testId || el.name || el.className || "";
+
+  return (
+    <Card className="border-[#f0d9a8] bg-[#fdf6e7] p-5 dark:border-[#4a3d20] dark:bg-[#2a2416]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-semibold text-[#9a6700] dark:text-[#e0b341]">
+            <Pause className="h-4 w-4 shrink-0" />
+            Run paused - step {paused.step.index + 1}
+          </p>
+          <p className="mt-1 text-sm text-[#7a6a45] dark:text-[#c9b98a]">
+            {paused.step.description}
+          </p>
+          <p className="mt-1 text-xs text-[#7a6a45] dark:text-[#c9b98a]">{paused.reason}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => onRetry(chosen ?? undefined)} className="px-3 py-2 text-xs">
+            <RotateCcw className="h-3.5 w-3.5" />
+            {chosen != null ? "Retry with selected field" : "Retry step"}
+          </Button>
+          <Button variant="secondary" onClick={onSkip} className="px-3 py-2 text-xs">
+            <SkipForward className="h-3.5 w-3.5" />
+            Continue anyway
+          </Button>
+          <Button variant="secondary" onClick={onStop} className="px-3 py-2 text-xs">
+            <Square className="h-3.5 w-3.5" />
+            Stop run
+          </Button>
+        </div>
+      </div>
+
+      {paused.candidates.length > 0 ? (
+        <div className="mt-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#7a6a45] dark:text-[#c9b98a]">
+            Pick the field this step should act on ({paused.candidates.length} on screen)
+          </p>
+          <div className="scrollbar-thin max-h-64 overflow-y-auto rounded-xl border border-[#e8dcc0] bg-white dark:border-[#4a3d20] dark:bg-[#161f27]">
+            {paused.candidates.map((el) => (
+              <button
+                key={el.index}
+                type="button"
+                onClick={() => setChosen(chosen === el.index ? null : el.index)}
+                className={`flex w-full items-baseline gap-3 border-b border-[#f2ece0] px-3 py-2 text-left last:border-0 dark:border-[#28333c] ${
+                  chosen === el.index
+                    ? "bg-[#fff1ec] dark:bg-[#2c1812]"
+                    : "hover:bg-[#fafbfc] dark:hover:bg-[#1d2830]"
+                }`}
+              >
+                <span className="w-8 shrink-0 text-right text-[11px] tabular-nums text-[#9aa7ad] dark:text-[#71808a]">
+                  {el.index}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm text-[#182128] dark:text-[#e6edf1]">
+                    {label(el)}
+                  </span>
+                  <span className="block truncate font-mono text-[11px] text-[#667880] dark:text-[#9aabb4]">
+                    {el.className}
+                    {ident(el) ? ` · ${ident(el)}` : ""}
+                  </span>
+                </span>
+                {chosen === el.index ? (
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-[#FA4616]" />
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
 function lastShotIdx(steps: StepResult[]): number | null {
   for (let i = steps.length - 1; i >= 0; i -= 1) {
     if (steps[i].afterScreenshot || steps[i].beforeScreenshot) return steps[i].index;
@@ -265,6 +442,7 @@ const STATUS_META: Record<
   passed: { tone: "emerald", Icon: CheckCircle2, label: "Passed" },
   "needs-attention": { tone: "amber", Icon: TriangleAlert, label: "Needs attention" },
   failed: { tone: "rose", Icon: XCircle, label: "Failed" },
+  skipped: { tone: "grey", Icon: SkipForward, label: "Skipped" },
 };
 
 function ActivityRow({

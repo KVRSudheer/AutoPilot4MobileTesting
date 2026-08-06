@@ -2,6 +2,7 @@ import type {
   AppConfig,
   ConnectionTarget,
   DeviceConfig,
+  DriverConnectionInfo,
   FarmCredentials,
   SessionMode,
 } from "../types.js";
@@ -14,6 +15,23 @@ import { SimulatedDriver } from "./simulated.js";
 export interface CreatedSession {
   driver: DeviceDriver;
   mode: SessionMode;
+  // Endpoint + capabilities actually used (live only), credentials removed.
+  connection?: DriverConnectionInfo;
+}
+
+// Capability keys / nested option buckets that carry secrets.
+const SECRET_KEYS = new Set(["username", "userName", "accessKey", "access_key", "key", "password"]);
+
+function stripSecrets(caps: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(caps)) {
+    if (SECRET_KEYS.has(k)) continue;
+    out[k] =
+      v && typeof v === "object" && !Array.isArray(v)
+        ? stripSecrets(v as Record<string, unknown>)
+        : v;
+  }
+  return out;
 }
 
 /**
@@ -71,5 +89,9 @@ export async function createSession(args: {
   return {
     mode: "live",
     driver: new WebdriverDriver(browser as never, args.device.platform, target),
+    connection: {
+      hubUrl: `${conn.protocol}://${conn.hostname}${conn.port === 443 || conn.port === 80 ? "" : `:${conn.port}`}${conn.path}`,
+      capabilities: stripSecrets(conn.capabilities),
+    },
   };
 }

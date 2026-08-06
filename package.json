@@ -6,15 +6,17 @@
   "type": "module",
   "workspaces": [
     "client",
-    "server"
+    "server",
+    "extension"
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c magenta,cyan \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "npm --workspace server run dev",
     "dev:client": "npm --workspace client run dev",
-    "build": "npm --workspace server run build && npm --workspace client run build",
+    "build": "npm --workspace server run build && npm --workspace extension run build && npm --workspace client run build",
     "start": "npm --workspace server run start",
-    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck"
+    "typecheck": "npm --workspace server run typecheck && npm --workspace extension run typecheck && npm --workspace client run typecheck",
+    "build:extension": "npm --workspace extension run build"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

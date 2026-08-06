@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
+  Braces,
   Check,
   Copy,
   Download,
   FileCode2,
+  Gauge,
   Info,
   ListTree,
   RotateCcw,
@@ -16,26 +18,41 @@ import {
   getCatalog,
   stepElementShotUrl,
   stepScreenshotUrl,
+  workflowCodedUrl,
   workflowXamlUrl,
 } from "../../lib/api";
+import { apiFetch, downloadDoc } from "../../lib/bridge";
+import { BridgeImg, MediaLink } from "../BridgeMedia";
 import { Button, Card, Eyebrow, Pill, Tabs } from "../ui";
 
-type Panel = "catalog" | "xaml" | "json";
+type Panel = "catalog" | "xaml" | "csharp" | "json";
 
 export function WorkflowStep({
   session,
   onBack,
   onRestart,
+  onReplay,
 }: {
   session: SessionState | null;
   onBack: () => void;
   onRestart: () => void;
+  // Re-run the captured selectors with no LLM planning, to time the automation.
+  onReplay?: () => void;
 }) {
   const [panel, setPanel] = useState<Panel>("catalog");
   const [catalog, setCatalog] = useState<SelectorCatalogEntry[]>([]);
   const [actionLog, setActionLog] = useState<unknown>(null);
   const [xaml, setXaml] = useState<string>("");
+  const [csharp, setCsharp] = useState<string>("");
   const [copied, setCopied] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const download = (url: string, name: string) => {
+    setDownloadError(null);
+    void downloadDoc(url, name).catch((e: unknown) =>
+      setDownloadError(e instanceof Error ? e.message : "Download failed."),
+    );
+  };
 
   useEffect(() => {
     if (!session) return;
@@ -45,9 +62,13 @@ export function WorkflowStep({
         setActionLog(d.actionLog);
       })
       .catch(() => undefined);
-    void fetch(workflowXamlUrl(session.id))
+    void apiFetch(workflowXamlUrl(session.id))
       .then((r) => r.text())
       .then(setXaml)
+      .catch(() => undefined);
+    void apiFetch(workflowCodedUrl(session.id))
+      .then((r) => r.text())
+      .then(setCsharp)
       .catch(() => undefined);
   }, [session]);
 
@@ -58,6 +79,9 @@ export function WorkflowStep({
   }
 
   const withSelectors = catalog.filter((c) => c.selector).length;
+  // Wall-clock of the agent-driven run, for comparison against a replay.
+  const times = session.steps.flatMap((s) => [s.startedAt, s.finishedAt]).filter(Boolean) as number[];
+  const agentMs = times.length >= 2 ? Math.max(...times) - Math.min(...times) : null;
 
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text).then(() => {
@@ -66,7 +90,14 @@ export function WorkflowStep({
     });
   };
 
-  const panelText = panel === "xaml" ? xaml : panel === "json" ? JSON.stringify(actionLog, null, 2) : "";
+  const panelText =
+    panel === "xaml"
+      ? xaml
+      : panel === "csharp"
+        ? csharp
+        : panel === "json"
+          ? JSON.stringify(actionLog, null, 2)
+          : "";
 
   return (
     <div className="space-y-6">
@@ -82,20 +113,81 @@ export function WorkflowStep({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <a href={workflowXamlUrl(session.id)} download>
-              <Button>
-                <Download className="h-4 w-4" />
-                Download .xaml
-              </Button>
-            </a>
-            <a href={actionLogUrl(session.id)} download>
-              <Button variant="secondary">
-                <Download className="h-4 w-4" />
-                Action log (.json)
-              </Button>
-            </a>
+            <Button
+              onClick={() =>
+                download(workflowXamlUrl(session.id), `workflow-${session.id}.xaml`)
+              }
+            >
+              <Download className="h-4 w-4" />
+              Download .xaml
+            </Button>
+            <Button
+              variant="secondary"
+              title="Mobile Device Manager opens the device - so it shows in the MDM device view - and every action is a raw Appium HTTP call on that same session."
+              onClick={() =>
+                download(
+                  workflowCodedUrl(session.id, "hybrid"),
+                  `workflow-${session.id}-mdm-http.cs`,
+                )
+              }
+            >
+              <Download className="h-4 w-4" />
+              Coded (MDM + HTTP)
+            </Button>
+            <Button
+              variant="secondary"
+              title="MDM connection plus UiPath mobile activities for every action - full MDM step logging and screenshots."
+              onClick={() =>
+                download(workflowCodedUrl(session.id, "mdm"), `workflow-${session.id}-mdm.cs`)
+              }
+            >
+              <Download className="h-4 w-4" />
+              Coded (MDM activities)
+            </Button>
+            <Button
+              variant="secondary"
+              title="Standalone: creates its own Appium session. No packages needed, but the run is not visible in MDM."
+              onClick={() =>
+                download(workflowCodedUrl(session.id, "http"), `workflow-${session.id}-appium.cs`)
+              }
+            >
+              <Download className="h-4 w-4" />
+              Coded (raw Appium)
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => download(actionLogUrl(session.id), `actionlog-${session.id}.json`)}
+            >
+              <Download className="h-4 w-4" />
+              Action log (.json)
+            </Button>
           </div>
         </div>
+
+        {onReplay ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#eceff1] bg-[#fafbfc] px-4 py-3 dark:border-[#28333c] dark:bg-[#161f27]">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-[#182128] dark:text-[#e6edf1]">
+                Measure execution speed
+              </p>
+              <p className="text-xs leading-5 text-[#667880] dark:text-[#9aabb4]">
+                Re-runs these exact selectors on the same device with no LLM planning - how fast the
+                generated automation actually is.
+                {agentMs != null ? ` This agent-driven run took ${fmtDuration(agentMs)}.` : ""}
+              </p>
+            </div>
+            <Button variant="secondary" onClick={onReplay}>
+              <Gauge className="h-4 w-4" />
+              Replay at full speed
+            </Button>
+          </div>
+        ) : null}
+
+        {downloadError ? (
+          <p className="mt-3 text-right text-xs text-[#c0334b] dark:text-[#ff7d8a]">
+            {downloadError}
+          </p>
+        ) : null}
 
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
           <Stat label="Steps" value={`${catalog.length}`} />
@@ -129,6 +221,7 @@ export function WorkflowStep({
             options={[
               { value: "catalog", label: "Selector catalog" },
               { value: "xaml", label: "Workflow XAML" },
+              { value: "csharp", label: "Coded (C# / MDM + HTTP)" },
               { value: "json", label: "Action log" },
             ]}
           />
@@ -143,6 +236,9 @@ export function WorkflowStep({
         {panel === "catalog" ? <CatalogTable rows={catalog} sessionId={session.id} /> : null}
         {panel === "xaml" ? (
           <CodeBlock icon={<FileCode2 className="h-4 w-4" />} text={xaml} />
+        ) : null}
+        {panel === "csharp" ? (
+          <CodeBlock icon={<Braces className="h-4 w-4" />} text={csharp} />
         ) : null}
         {panel === "json" ? (
           <CodeBlock icon={<ListTree className="h-4 w-4" />} text={panelText} />
@@ -161,6 +257,12 @@ export function WorkflowStep({
       </div>
     </div>
   );
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -207,39 +309,35 @@ function CatalogTable({ rows, sessionId }: { rows: SelectorCatalogEntry[]; sessi
                 {row.hasElementShot ? (
                   // Cropped to just the interacted element; click to open the
                   // full-screen shot for context.
-                  <a
+                  <MediaLink
                     href={
                       row.hasScreenshot
                         ? stepScreenshotUrl(sessionId, row.step - 1)
                         : stepElementShotUrl(sessionId, row.step - 1)
                     }
-                    target="_blank"
-                    rel="noreferrer"
                     title="Open full screen for context"
                     className="mt-2 block w-fit"
                   >
-                    <img
+                    <BridgeImg
                       src={stepElementShotUrl(sessionId, row.step - 1)}
                       alt={`Step ${row.step} element`}
                       loading="lazy"
                       className="max-h-24 w-auto max-w-[260px] rounded-md border border-[#e7eaec] bg-white object-contain p-1 transition hover:ring-2 hover:ring-[#FA4616] dark:border-[#28333c] dark:bg-[#0b0f12]"
                     />
-                  </a>
+                  </MediaLink>
                 ) : row.hasScreenshot ? (
-                  <a
+                  <MediaLink
                     href={stepScreenshotUrl(sessionId, row.step - 1)}
-                    target="_blank"
-                    rel="noreferrer"
                     title="Open full interaction screenshot"
                     className="mt-2 block w-fit"
                   >
-                    <img
+                    <BridgeImg
                       src={stepScreenshotUrl(sessionId, row.step - 1)}
                       alt={`Step ${row.step} screen`}
                       loading="lazy"
                       className="h-40 w-auto rounded-lg border border-[#e7eaec] bg-[#0b0f12] object-contain transition hover:ring-2 hover:ring-[#FA4616] dark:border-[#28333c]"
                     />
-                  </a>
+                  </MediaLink>
                 ) : null}
               </td>
               <td className="px-3 py-3">

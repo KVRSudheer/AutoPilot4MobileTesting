@@ -1,7 +1,12 @@
-import type { ReactNode } from "react";
-import { Moon, Plus, Settings2, Smartphone, Sparkles, Sun } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { CircleHelp, Moon, Plus, Settings2, Smartphone, Sparkles, Sun } from "lucide-react";
+import { HelpPanel } from "./HelpPanel";
 import { useTheme } from "../lib/theme";
 import type { RunStatus } from "../lib/types";
+// Imported (not /public) so Vite rewrites the URLs for the deployed base path
+// - a root-absolute "/uipath-logo.svg" 404s under the Coded App's /<app>/ base.
+import uipathLogo from "../assets/uipath-logo.svg";
+import uipathLogoWhite from "../assets/uipath-logo-white.svg";
 
 export interface NavItem {
   id: string;
@@ -22,8 +27,27 @@ export function AppShell({
   onSelect: (id: string) => void;
   children: ReactNode;
 }) {
+  // #help opens the docs directly, so the setup guide can be linked to.
+  const [helpOpen, setHelpOpen] = useState(
+    () => typeof window !== "undefined" && window.location.hash === "#help",
+  );
+
+  useEffect(() => {
+    const onHash = () => setHelpOpen(window.location.hash === "#help");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const closeHelp = () => {
+    setHelpOpen(false);
+    if (window.location.hash === "#help") {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  };
+
   return (
     <div className="min-h-screen">
+      <HelpPanel open={helpOpen} onClose={closeHelp} />
       <header className="sticky top-0 z-30 border-b border-[#ececec] bg-white/80 backdrop-blur-md dark:border-[#28333c] dark:bg-[#0d141a]/85">
         <div className="flex w-full flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center lg:justify-between lg:px-10 2xl:px-16">
           <div className="flex items-center gap-3">
@@ -34,9 +58,9 @@ export function AppShell({
               aria-label="Go to home"
               className="flex items-center rounded-md transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FA4616]"
             >
-              <img src="/uipath-logo.svg" alt="UiPath" className="h-7 w-auto dark:hidden" />
+              <img src={uipathLogo} alt="UiPath" className="h-7 w-auto dark:hidden" />
               <img
-                src="/uipath-logo-white.svg"
+                src={uipathLogoWhite}
                 alt="UiPath"
                 className="hidden h-7 w-auto dark:block"
               />
@@ -59,6 +83,7 @@ export function AppShell({
 
           <div className="flex items-center gap-3">
             <WorkspaceNav items={items} activeId={activeId} onSelect={onSelect} />
+            <HelpButton onClick={() => setHelpOpen(true)} />
             <ThemeToggle />
           </div>
         </div>
@@ -68,10 +93,25 @@ export function AppShell({
 
       <footer className="w-full px-5 pb-8 lg:px-10 2xl:px-16">
         <p className="text-center text-xs text-[#9aa7ad] dark:text-[#71808a]">
-          Powered by the UiPath SDK · LLM Gateway · BrowserStack &amp; Sauce Labs · Appium
+          Powered by the UiPath SDK · LLM Gateway · BrowserStack, Sauce Labs &amp; LambdaTest · Appium
         </p>
       </footer>
     </div>
+  );
+}
+
+function HelpButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Help & documentation"
+      aria-label="Open help and documentation"
+      className="flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-[#e1e4e6] bg-white px-3 text-sm font-medium text-[#667880] transition hover:border-[#FA4616] hover:text-[#A33200] dark:border-[#28333c] dark:bg-[#161f27] dark:text-[#9aabb4] dark:hover:border-[#FA4616] dark:hover:text-[#ff8a5c]"
+    >
+      <CircleHelp className="h-4 w-4" />
+      <span className="hidden sm:inline">Help</span>
+    </button>
   );
 }
 

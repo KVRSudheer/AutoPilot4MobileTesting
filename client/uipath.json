@@ -1,0 +1,7 @@
+{
+  "scope": "OR.Execution ConversationalAgents",
+  "orgName": "psindiacoe",
+  "tenantName": "Production",
+  "baseUrl": "https://staging.uipath.com",
+  "redirectUri": "http://localhost:5174"
+}

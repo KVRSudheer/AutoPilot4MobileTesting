@@ -55,6 +55,40 @@ export async function listFarmApps(creds: FarmCredentials): Promise<FarmApp[]> {
     }));
   }
 
+  if (creds.provider === "lambdatest") {
+    // Apps are bucketed by PLATFORM, not by device kind: /app/list?type=android
+    // and ?type=ios. (`type=realDevice` is accepted but always returns an empty
+    // list, and `app_type` is rejected outright.)
+    const auth = basicAuth(creds.username, creds.accessKey);
+    const fetchType = async (type: "android" | "ios"): Promise<FarmApp[]> => {
+      const res = await fetch(`https://manual-api.lambdatest.com/app/list?type=${type}`, {
+        headers: { Authorization: auth },
+      });
+      if (!res.ok) {
+        throw new Error(
+          `LambdaTest list failed (${res.status}): ${(await res.text()).slice(0, 200)}`,
+        );
+      }
+      const payload = (await res.json()) as { data?: Array<Record<string, unknown>> };
+      return (payload.data ?? [])
+        .map((a) => {
+          // Builds are referenced as lt://<app_id>; the API returns the bare id.
+          const rawId = String(a.app_url ?? a.app_id ?? "");
+          return {
+            appId: rawId && !rawId.startsWith("lt://") ? `lt://${rawId}` : rawId,
+            name: String(a.name ?? a.app_name ?? rawId),
+            uploadedAt: a.created_at ? String(a.created_at) : undefined,
+            // The bucket itself is the platform - more reliable than the filename.
+            platform: type === "ios" ? ("iOS" as const) : ("Android" as const),
+          };
+        })
+        .filter((a) => a.appId);
+    };
+
+    const [android, ios] = await Promise.all([fetchType("android"), fetchType("ios")]);
+    return [...android, ...ios];
+  }
+
   // Sauce Labs storage
   const host = sauceStorageHost(creds.region);
   const res = await fetch(`https://${host}/v1/storage/files?per_page=50`, {
@@ -106,6 +140,33 @@ export async function uploadFarmApp(
     const data = (await res.json()) as { app_url?: string; custom_id?: string; error?: string };
     if (!data.app_url) throw new Error(data.error || "BrowserStack upload returned no app_url.");
     return { appId: data.app_url, name: payload.file?.filename || payload.url || data.app_url, customId: data.custom_id };
+  }
+
+  if (creds.provider === "lambdatest") {
+    // Multipart: `appFile` for a binary or `url` for a public link, plus a
+    // display `name`. The platform is inferred by LambdaTest from the binary,
+    // so no type field is sent.
+    const form = new FormData();
+    if (payload.file) {
+      form.append("appFile", new Blob([payload.file.buffer]), payload.file.filename);
+    } else if (payload.url) {
+      form.append("url", payload.url);
+    }
+    if (payload.customId) form.append("custom_id", payload.customId);
+    form.append("name", payload.file?.filename || payload.customId || "autopilot-app");
+
+    const res = await fetch("https://manual-api.lambdatest.com/app/upload/realDevice", {
+      method: "POST",
+      headers: { Authorization: basicAuth(creds.username, creds.accessKey) },
+      body: form,
+    });
+    if (!res.ok) {
+      throw new Error(`LambdaTest upload failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
+    }
+    const data = (await res.json()) as { app_id?: string; app_url?: string; name?: string; message?: string };
+    const appId = data.app_url || (data.app_id ? `lt://${data.app_id}` : "");
+    if (!appId) throw new Error(data.message || "LambdaTest upload returned no app id.");
+    return { appId, name: data.name || payload.file?.filename || appId };
   }
 
   // Sauce Labs storage upload (file only; URL upload not supported the same way)

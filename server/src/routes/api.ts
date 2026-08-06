@@ -24,10 +24,14 @@ import { isUiPathConfigured, resolveUiPathToken } from "../uipath/auth.js";
 import { chatComplete, listWorkingModels } from "../uipath/llmGateway.js";
 import { createSession } from "../automation/session.js";
 import { runAutomation } from "../automation/orchestrator.js";
+import { getRunControl } from "../automation/runControl.js";
 import { buildXaml } from "../workflow/xamlBuilder.js";
+import { buildCodedWorkflow } from "../workflow/csharpBuilder.js";
+import { buildMdmCodedWorkflow } from "../workflow/mdmBuilder.js";
 import { buildActionLog, buildSelectorCatalog } from "../workflow/actionLog.js";
 import { listFarmApps, uploadFarmApp } from "../farms/appStorage.js";
 import { listFarmDevices } from "../farms/devices.js";
+import { parseStepScriptWithData, regenerateRecordedText } from "../workflow/stepScript.js";
 
 export const api = Router();
 
@@ -179,7 +183,43 @@ function resolveFarmCreds(input: Partial<FarmCredentials> | undefined): FarmCred
   };
 }
 
+// Replay: copy the recorded action + selector from a finished session so the
+// new run can execute them directly instead of re-planning.
+//
+// Any {{token}} data is regenerated rather than reused: `state.generatedData`
+// already holds fresh values (buildInitialState re-parsed the same script), so
+// the recorded text is re-pointed at those instead of resubmitting the values
+// the first run used.
+function seedFromRecording(state: SessionState, source: SessionState): SessionState {
+  const oldGen = source.generatedData ?? [];
+  const newGen = state.generatedData ?? [];
+  const refresh = (text: string | undefined, template: string | undefined) =>
+    text === undefined ? undefined : regenerateRecordedText(text, template, oldGen, newGen);
+
+  state.steps = source.steps
+    .filter((s) => s.action)
+    .map((s, i) => ({
+      index: i,
+      description: refresh(s.description, s.descriptionTemplate) ?? s.description,
+      // Carried through so exports from a replay keep per-step token scoping.
+      descriptionTemplate: s.descriptionTemplate,
+      status: "pending" as const,
+      action: s.action
+        ? { ...s.action, text: refresh(s.action.text, s.descriptionTemplate) }
+        : s.action,
+      selector: s.selector,
+      element: s.element,
+      condition: s.condition,
+      conditionGroup: s.conditionGroup,
+      optional: s.optional,
+    }));
+  state.title = `${source.title} (replay)`;
+  return state;
+}
+
 function buildInitialState(id: string, req: SessionRequest): SessionState {
+  // Expand {{tokens}} once, keeping the token->value map for the exporters.
+  const parsed = parseStepScriptWithData(req.testSteps ?? []);
   const platform = (req.device?.platform || "Android") as Platform;
   const target = req.device?.connectionTarget ?? "app";
   const provider = req.farm.provider;
@@ -220,12 +260,20 @@ function buildInitialState(id: string, req: SessionRequest): SessionState {
     appLabel,
     llmModel: req.uipath.llmModel || env.uipath.llmModel,
     llmLive: false,
+    gpsCoordinates: req.device?.gpsCoordinates?.trim() || undefined,
     createdAt: Date.now(),
     currentStep: 0,
-    steps: (req.testSteps ?? []).map((description, index) => ({
+    generatedData: parsed.generated.length ? parsed.generated : undefined,
+    // Conditional syntax (`If … / End if`, `Optional:`) is parsed here so the
+    // orchestrator can gate steps without re-parsing.
+    steps: parsed.steps.map((parsed, index) => ({
       index,
-      description,
+      description: parsed.description,
+      descriptionTemplate: parsed.template,
       status: "pending" as const,
+      condition: parsed.condition,
+      conditionGroup: parsed.conditionGroup,
+      optional: parsed.optional,
     })),
   };
 }
@@ -384,7 +432,12 @@ api.post("/sessions", (req: Request, res: Response) => {
 
   const merged = mergeWithEnvDefaults(body);
   const id = newSessionId();
-  const state = buildInitialState(id, merged);
+  let state = buildInitialState(id, merged);
+  if (merged.replayOf) {
+    const source = getSession(merged.replayOf);
+    if (!source) return res.status(404).json({ error: "The run to replay was not found." });
+    state = seedFromRecording(state, source);
+  }
   saveSession(state);
   runners.set(id, new SessionRunner(merged));
 
@@ -436,6 +489,41 @@ api.get("/sessions/:id/events", (req, res) => {
   }
 });
 
+// Interactive run control: stop / pause / resume / retry the paused step.
+api.post("/sessions/:id/control", (req, res) => {
+  const state = getSession(req.params.id);
+  if (!state) return res.status(404).json({ error: "Session not found." });
+  const body = req.body as {
+    action?: "stop" | "pause" | "resume" | "retry" | "skip" | "pauseOnFailure";
+    targetIndex?: number;
+    value?: boolean;
+  };
+  const control = getRunControl(req.params.id);
+  switch (body.action) {
+    case "stop":
+      control.stop();
+      break;
+    case "pause":
+      control.requestPause();
+      break;
+    case "resume":
+      control.resume({ kind: "skip" });
+      break;
+    case "skip":
+      control.resume({ kind: "skip" });
+      break;
+    case "retry":
+      control.resume({ kind: "retry", targetIndex: body.targetIndex });
+      break;
+    case "pauseOnFailure":
+      control.pauseOnFailure = Boolean(body.value);
+      break;
+    default:
+      return res.status(400).json({ error: "Unknown control action." });
+  }
+  res.json({ ok: true, paused: control.paused, pauseOnFailure: control.pauseOnFailure });
+});
+
 api.get("/sessions/:id/catalog", (req, res) => {
   const state = getSession(req.params.id);
   if (!state) return res.status(404).json({ error: "Session not found." });
@@ -452,11 +540,13 @@ api.get("/sessions/:id/steps/:index/screenshot", (req, res) => {
     res.status(404).end();
     return;
   }
-  // Stored as a data: URL or raw base64 - strip any prefix before decoding.
-  const raw = b64.replace(/^data:image\/\w+;base64,/, "");
-  res.setHeader("Content-Type", "image/png");
+  // Stored as a data: URL - image/png from real devices, image/svg+xml from
+  // the simulated device - or as raw base64. Match any media type (not just
+  // \w+, which misses "svg+xml") and serve it back with the right type.
+  const m = b64.match(/^data:([^;,]+);base64,/);
+  res.setHeader("Content-Type", m ? m[1] : "image/png");
   res.setHeader("Cache-Control", "no-cache");
-  res.send(Buffer.from(raw, "base64"));
+  res.send(Buffer.from(m ? b64.slice(m[0].length) : b64, "base64"));
 });
 
 // The element-cropped "field" screenshot for one step, as PNG.
@@ -469,10 +559,10 @@ api.get("/sessions/:id/steps/:index/elementshot", (req, res) => {
     res.status(404).end();
     return;
   }
-  const raw = b64.replace(/^data:image\/\w+;base64,/, "");
-  res.setHeader("Content-Type", "image/png");
+  const m = b64.match(/^data:([^;,]+);base64,/);
+  res.setHeader("Content-Type", m ? m[1] : "image/png");
   res.setHeader("Cache-Control", "no-cache");
-  res.send(Buffer.from(raw, "base64"));
+  res.send(Buffer.from(m ? b64.slice(m[0].length) : b64, "base64"));
 });
 
 api.get("/sessions/:id/workflow.xaml", (req, res) => {
@@ -481,6 +571,26 @@ api.get("/sessions/:id/workflow.xaml", (req, res) => {
   res.setHeader("Content-Type", "application/xml");
   res.setHeader("Content-Disposition", `attachment; filename="${fileStem(state)}.xaml"`);
   res.send(buildXaml(state));
+});
+
+// Three flavours of the same recorded run:
+//   hybrid (default) - MDM opens the device, raw HTTP drives that session
+//   mdm              - MDM connection plus UiPath mobile activities throughout
+//   http             - standalone: creates its own session, invisible to MDM
+api.get("/sessions/:id/workflow.cs", (req, res) => {
+  const state = getSession(req.params.id);
+  if (!state) return res.status(404).json({ error: "Session not found." });
+  const flavor = String(req.query.flavor ?? "hybrid");
+  const body =
+    flavor === "http"
+      ? buildCodedWorkflow(state)
+      : flavor === "mdm"
+        ? buildMdmCodedWorkflow(state)
+        : buildCodedWorkflow(state, { attachToMdm: true });
+  const suffix = flavor === "http" ? "-appium" : flavor === "mdm" ? "-mdm" : "-mdm-http";
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileStem(state)}${suffix}.cs"`);
+  res.send(body);
 });
 
 api.get("/sessions/:id/actionlog.json", (req, res) => {
@@ -575,6 +685,16 @@ api.get("/batches/:id/events", (req, res) => {
 });
 
 // --- Run execution ----------------------------------------------------------
+// "lat,long" -> numbers. Rejects anything out of range so a typo can't send
+// the device to the middle of the ocean silently.
+function parseCoordinates(value?: string): { latitude: number; longitude: number } | null {
+  if (!value) return null;
+  const m = value.split(",").map((p) => Number(p.trim()));
+  if (m.length !== 2 || !Number.isFinite(m[0]) || !Number.isFinite(m[1])) return null;
+  if (Math.abs(m[0]) > 90 || Math.abs(m[1]) > 180) return null;
+  return { latitude: m[0], longitude: m[1] };
+}
+
 async function executeRun(
   state: SessionState,
   request: SessionRequest,
@@ -600,13 +720,19 @@ async function executeRun(
   }
 
   // 2) Create the device session (live farm or simulated).
-  const { driver, mode } = await createSession({
+  const { driver, mode, connection } = await createSession({
     creds: request.farm,
     device: request.device,
     app: request.app,
   });
   state.mode = mode;
-  setDriver(state.id, driver);
+  // Recorded (without credentials) so the generated code can reproduce the
+  // exact session this run used.
+  if (connection) state.connection = connection;
+  saveSession(state);
+  // Tell the UI immediately - until this lands it can't know whether the run
+  // is live or simulated, and provisioning can take minutes.
+  emit({ type: "session", session: state });
   emit({
     type: "log",
     level: "info",
@@ -616,6 +742,31 @@ async function executeRun(
         : "No device-farm credentials - running the bundled simulated session.",
     at: Date.now(),
   });
+
+  // 2c) GPS: what "use my current location" will read. Applied after the
+  // session opens (it's a driver command, not a capability) and read back so
+  // the log proves whether the device accepted it.
+  const coords = parseCoordinates(request.device?.gpsCoordinates);
+  if (mode === "live" && coords) {
+    try {
+      const reported = await driver.setGeoLocation(coords.latitude, coords.longitude);
+      emit({
+        type: "log",
+        level: reported ? "info" : "warn",
+        message: reported
+          ? `📍 Device GPS set to ${coords.latitude}, ${coords.longitude} - device reports ${reported.latitude}, ${reported.longitude}.`
+          : `📍 Device GPS set to ${coords.latitude}, ${coords.longitude} - accepted, but this device can't report its position back, so confirm from the app itself (e.g. the address "use my current location" resolves to).`,
+        at: Date.now(),
+      });
+    } catch (error) {
+      emit({
+        type: "log",
+        level: "warn",
+        message: `Could not set the device GPS (${error instanceof Error ? error.message : String(error)}). "Use my current location" will use the device's real position.`,
+        at: Date.now(),
+      });
+    }
+  }
 
   // 2b) Browser target: open the start URL before automating - logged,
   // verified against the page we actually landed on, and retried once.
@@ -678,5 +829,6 @@ async function executeRun(
     auth,
     llmModel: request.uipath.llmModel || env.uipath.llmModel,
     emit,
+    replay: Boolean(request.replayOf),
   });
 }

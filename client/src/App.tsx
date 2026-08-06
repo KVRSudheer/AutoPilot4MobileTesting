@@ -6,6 +6,13 @@ import { RunStep } from "./components/wizard/RunStep";
 import { WorkflowStep } from "./components/wizard/WorkflowStep";
 import { BatchStep } from "./components/wizard/BatchStep";
 import { createBatch, createSession, getDefaults, type BatchInfo } from "./lib/api";
+import {
+  clearOAuthFlag,
+  isPlatformConfigured,
+  markOAuthStarted,
+  shouldAutoSignIn,
+  signInWithPlatform,
+} from "./lib/uipath";
 import type {
   AppConfig,
   ConnectionTarget,
@@ -53,7 +60,7 @@ const DEFAULT_FORM: FormState = {
     tenantName: "",
     clientId: "",
     clientSecret: "",
-    scope: "OR.Execution",
+    scope: "OR.Execution ConversationalAgents",
     bearerToken: "",
     llmModel: "gpt-4o-mini-2024-07-18",
   },
@@ -88,18 +95,54 @@ export default function App() {
           ...prev,
           uipath: {
             ...prev.uipath,
-            baseUrl: d.uipath.baseUrl || prev.uipath.baseUrl,
-            orgName: d.uipath.orgName || prev.uipath.orgName,
-            tenantName: d.uipath.tenantName || prev.uipath.tenantName,
-            scope: d.uipath.scope || prev.uipath.scope,
-            llmModel: d.uipath.llmModel || prev.uipath.llmModel,
-            mode: d.uipath.hasBearer && !d.uipath.hasClientCredentials ? "bearer" : prev.uipath.mode,
+            // Prefer values already in the form (e.g. from platform sign-in)
+            // over server-side defaults; both only fill blanks initially.
+            baseUrl: prev.uipath.baseUrl || d.uipath.baseUrl,
+            orgName: prev.uipath.orgName || d.uipath.orgName,
+            tenantName: prev.uipath.tenantName || d.uipath.tenantName,
+            scope: prev.uipath.scope || d.uipath.scope,
+            llmModel: prev.uipath.llmModel || d.uipath.llmModel,
+            mode:
+              d.uipath.hasBearer && !d.uipath.hasClientCredentials ? "bearer" : prev.uipath.mode,
           },
           farm: { ...prev.farm, provider: d.farm.provider || prev.farm.provider },
         }));
       })
       .catch(() => setDefaults(null));
   }, []);
+
+  // Coded App / platform mode: pick up the UiPath OAuth session (auto when
+  // hosted on uipath.host or when returning from a sign-in redirect) and
+  // prefill bearer auth with the platform token - no secrets to paste.
+  const applyPlatformSignIn = useCallback(async () => {
+    try {
+      const signIn = await signInWithPlatform();
+      clearOAuthFlag();
+      if (!signIn) return;
+      setForm((prev) => ({
+        ...prev,
+        uipath: {
+          ...prev.uipath,
+          mode: "bearer",
+          bearerToken: signIn.token,
+          baseUrl: signIn.baseUrl || prev.uipath.baseUrl,
+          orgName: signIn.orgName || prev.uipath.orgName,
+          tenantName: signIn.tenantName || prev.uipath.tenantName,
+        },
+      }));
+    } catch {
+      // Sign-in failed or was cancelled - manual credentials still work.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shouldAutoSignIn()) void applyPlatformSignIn();
+  }, [applyPlatformSignIn]);
+
+  const startPlatformSignIn = useCallback(() => {
+    markOAuthStarted(); // survive the OAuth redirect round trip
+    void applyPlatformSignIn();
+  }, [applyPlatformSignIn]);
 
   const set = (partial: Partial<FormState>) => setForm((prev) => ({ ...prev, ...partial }));
 
@@ -216,6 +259,12 @@ export default function App() {
     if (reqs.length) void launch(reqs, reqs[0]?.title?.trim() || "Re-run");
   };
 
+  // Replay: re-execute a finished run's captured selectors with no LLM
+  // planning, so the timings show how fast the automation itself is.
+  const replay = (sessionId: string, req: SessionRequest) => {
+    void launch([{ ...req, replayOf: sessionId }], `${req.title ?? "Run"} (replay)`);
+  };
+
   // Stable status reporter (deduped) so RunHosts don't loop.
   const reportRunStatus = useCallback((id: string, status: RunStatus) => {
     setRunStatuses((prev) => {
@@ -269,6 +318,7 @@ export default function App() {
           onAddDevice={addDevice}
           onRemoveDevice={removeDevice}
           onSetTarget={setTarget}
+          onPlatformSignIn={isPlatformConfigured() ? startPlatformSignIn : undefined}
         />
       </div>
 
@@ -299,6 +349,7 @@ export default function App() {
             onNewTest={goCompose}
             onStatus={reportRunStatus}
             onRerun={rerun}
+            onReplay={replay}
           />
         </div>
       ))}
@@ -311,11 +362,13 @@ function RunHost({
   onNewTest,
   onStatus,
   onRerun,
+  onReplay,
 }: {
   run: RunInstance;
   onNewTest: () => void;
   onStatus: (id: string, status: RunStatus) => void;
   onRerun: (reqs: SessionRequest[]) => void;
+  onReplay: (sessionId: string, req: SessionRequest) => void;
 }) {
   const [sub, setSub] = useState<"run" | "workflow">("run");
   const report = useCallback((s: RunStatus) => onStatus(run.id, s), [run.id, onStatus]);
@@ -346,7 +399,16 @@ function RunHost({
         onRerun={() => onRerun(run.requests)}
       />
     ) : (
-      <WorkflowStep session={run.session} onBack={() => setSub("run")} onRestart={onNewTest} />
+      <WorkflowStep
+        session={run.session}
+        onBack={() => setSub("run")}
+        onRestart={onNewTest}
+        onReplay={
+          run.session && run.requests[0]
+            ? () => onReplay(run.session!.id, run.requests[0])
+            : undefined
+        }
+      />
     );
   }
   return null;
