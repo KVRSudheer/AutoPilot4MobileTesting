@@ -2702,7 +2702,7 @@ function baseCapabilities(device, app) {
     "appium:platformVersion": device.osVersion,
     "appium:app": build.buildId,
     "appium:autoGrantPermissions": device.platform === "Android" ? true : void 0,
-    "appium:newCommandTimeout": 300
+    "appium:newCommandTimeout": 1800
   };
   if (device.platform === "Android" && build.appPackage) {
     caps["appium:appPackage"] = build.appPackage;
@@ -2726,7 +2726,7 @@ function browserCapabilities(device) {
     "appium:automationName": automationName,
     "appium:deviceName": device.deviceName,
     "appium:platformVersion": device.osVersion,
-    "appium:newCommandTimeout": 300
+    "appium:newCommandTimeout": 1800
   };
 }
 
@@ -2819,7 +2819,7 @@ var sauceLabs = {
         platformName: device.platform,
         "appium:automationName": automationName,
         "appium:platformVersion": device.osVersion,
-        "appium:newCommandTimeout": 300,
+        "appium:newCommandTimeout": 1800,
         "sauce:options": sauceOptions
       };
     } else {
@@ -2889,7 +2889,7 @@ var lambdaTest = {
         "appium:automationName": automationName,
         "appium:deviceName": device.deviceName,
         "appium:platformVersion": device.osVersion,
-        "appium:newCommandTimeout": 300
+        "appium:newCommandTimeout": 1800
       };
     } else {
       ltOptions.name = appSessionName(device, app);
@@ -3389,11 +3389,38 @@ var WebdriverDriver = class {
       return null;
     }
   }
+  /**
+   * Close the soft keyboard, and verify it actually closed.
+   *
+   * `hideKeyboard` is unreliable on Android - over a web view it frequently
+   * resolves without doing anything, and the old code swallowed that silently.
+   * A keyboard left up keeps the form scrolled, so every element position read
+   * afterwards is wrong: on a card form that put the card number into the name
+   * field and left the submit button unreachable.
+   *
+   * BACK always closes an Android IME, but it navigates when no keyboard is
+   * open - so it is used only after confirming one IS open.
+   */
   async dismissKeyboard() {
-    if (this.target !== "app" || !this.browser.hideKeyboard) return;
-    try {
-      await this.browser.hideKeyboard();
-    } catch {
+    if (this.target !== "app") return;
+    const isShown = async () => {
+      if (!this.browser.isKeyboardShown) return false;
+      try {
+        return Boolean(await this.browser.isKeyboardShown());
+      } catch {
+        return false;
+      }
+    };
+    if (!await isShown()) return;
+    if (this.browser.hideKeyboard) {
+      try {
+        await this.browser.hideKeyboard();
+      } catch {
+      }
+    }
+    if (!await isShown()) return;
+    if (this.platform === "Android") {
+      await this.pressKey("BACK").catch(() => void 0);
     }
   }
   async quit() {
@@ -4221,7 +4248,7 @@ var STEP_PAUSE_MS = 650;
 var MAX_SEARCH_TRIES = 4;
 var VERIFY_ATTEMPTS = 12;
 var VERIFY_RETRY_MS = 5e3;
-var CONDITION_WAIT_MS = 5e3;
+var CONDITION_WAIT_MS = 2e4;
 function labelForLog(el) {
   return el.text || el.contentDesc || el.accessibilityId || el.name || el.resourceId || el.htmlId || el.placeholder || el.className || `element #${el.index}`;
 }
@@ -4345,7 +4372,7 @@ async function runAutomation(args) {
         break;
       }
       if (control.pausePending) {
-        const choice = await pauseHere(session, step, [], "Paused by the operator.", control, emit);
+        const choice = await pauseHere(session, step, [], "Paused by the operator.", control, emit, driver);
         if (choice.kind === "stop") break;
       }
       step.status = "running";
@@ -4374,7 +4401,8 @@ async function runAutomation(args) {
           candidates,
           step.message || `Step ${i + 1} did not pass.`,
           control,
-          emit
+          emit,
+          driver
         );
         if (choice.kind === "stop" || choice.kind === "skip") break;
         forceContext = candidates;
@@ -4435,14 +4463,23 @@ async function runAutomation(args) {
   }
   return session;
 }
-async function pauseHere(session, step, candidates, reason, control, emit) {
+var PAUSE_KEEPALIVE_MS = 6e4;
+async function pauseHere(session, step, candidates, reason, control, emit, driver) {
   const previous = session.status;
   session.status = "paused";
   saveSession(session);
   emit({ type: "session", session });
   emit({ type: "paused", step, candidates, reason });
   emit({ type: "log", level: "warn", message: `\u23F8 ${reason} Waiting for the operator\u2026`, at: Date.now() });
-  const choice = await control.waitForResume(candidates);
+  const keepalive = driver ? setInterval(() => {
+    void driver.screenSignature().catch(() => void 0);
+  }, PAUSE_KEEPALIVE_MS) : void 0;
+  let choice;
+  try {
+    choice = await control.waitForResume(candidates);
+  } finally {
+    if (keepalive) clearInterval(keepalive);
+  }
   session.status = previous === "paused" ? "running" : previous;
   saveSession(session);
   emit({ type: "resumed" });
@@ -4503,6 +4540,28 @@ async function runStep(ctx) {
   let elements = await driver.captureElements();
   elements = await clearPermissionDialogs(driver, elements, emit);
   let action = await planOnce(elements);
+  if (action.actionType === "assertExists" && !isWaitStep(step.description)) {
+    const intent = planActionHeuristic(step.description, elements);
+    if (/^\s*(tap|click|press|touch|select|choose|tick|check|toggle)\b/i.test(step.description)) {
+      intent.actionType = "tap";
+      intent.text = void 0;
+    }
+    if (intent.actionType !== "assertExists") {
+      emit({
+        type: "log",
+        level: "info",
+        message: `The planner reported the target missing; the step asks to ${intent.actionType === "setText" ? "type" : intent.actionType}, so that is what will be attempted.`,
+        at: Date.now()
+      });
+      action = {
+        ...action,
+        actionType: intent.actionType,
+        text: intent.text ?? action.text,
+        direction: intent.direction ?? action.direction,
+        key: intent.key ?? action.key
+      };
+    }
+  }
   if (forceElement) {
     elements = forceContext && forceContext.length ? forceContext : elements;
     const at = elements.findIndex((e) => e.index === forceElement.index);
@@ -4668,7 +4727,11 @@ async function runStep(ctx) {
     step.element = target2;
     step.selector = selector;
     if (action.actionType === "setText" && isEditableElement(target2) && !hasIdentifier(target2) && driver.target === "app") {
-      const centre = centreOf(target2);
+      await driver.dismissKeyboard().catch(() => void 0);
+      await delay2(600);
+      const settled = await driver.captureElements().catch(() => elements);
+      const here = settled.find((e) => sameElement(e, target2)) ?? target2;
+      const centre = centreOf(here);
       if (centre) {
         const text = action.text ?? "";
         emit({
@@ -4679,8 +4742,10 @@ async function runStep(ctx) {
         });
         const t0 = Date.now();
         await driver.tapAt(centre.x, centre.y);
-        await delay2(400);
+        await delay2(500);
         await driver.typeIntoFocused(text);
+        await driver.dismissKeyboard().catch(() => void 0);
+        await delay2(400);
         step.status = "passed";
         step.outcome = {
           dispatched: true,
@@ -4758,6 +4823,11 @@ async function runStep(ctx) {
   }
   await executeAction(driver, action, void 0, step, emit);
   step.afterScreenshot = await driver.takeScreenshot();
+}
+function isWaitStep(description) {
+  return /\b(wait|verify|assert|confirm|check|should\s+(be|see)|is\s+displayed|appears?)\b/i.test(
+    description
+  );
 }
 function isEditableElement(el) {
   const tag = (el.tag || el.className || "").toLowerCase();
@@ -4854,6 +4924,7 @@ async function executeAction(driver, action, selector, step, emit) {
       await driver.setText(selector, action.text ?? "");
       const want = action.text ?? "";
       const got = await driver.getFieldValue(selector);
+      await driver.dismissKeyboard().catch(() => void 0);
       const applied = Boolean(want) && got.includes(want);
       step.status = "passed";
       step.outcome = {

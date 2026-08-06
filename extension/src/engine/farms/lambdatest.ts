@@ -65,7 +65,7 @@ export const lambdaTest: DeviceFarm = {
         "appium:automationName": automationName,
         "appium:deviceName": device.deviceName,
         "appium:platformVersion": device.osVersion,
-        "appium:newCommandTimeout": 300,
+        "appium:newCommandTimeout": 1800,
       };
     } else {
       ltOptions.name = appSessionName(device, app);

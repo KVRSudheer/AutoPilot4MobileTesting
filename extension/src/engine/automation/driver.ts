@@ -69,6 +69,7 @@ interface WdBrowser {
   // Send keystrokes to whatever element currently has focus.
   keys?(text: string): Promise<void>;
   hideKeyboard?(): Promise<void>;
+  isKeyboardShown?(): Promise<boolean>;
   setGeoLocation?(loc: { latitude: number; longitude: number; altitude?: number }): Promise<void>;
   getGeoLocation?(): Promise<{ latitude: number; longitude: number } | null>;
   execute<T>(script: string | ((...a: never[]) => T), ...args: unknown[]): Promise<T>;
@@ -499,12 +500,44 @@ export class WebdriverDriver implements DeviceDriver {
     }
   }
 
+  /**
+   * Close the soft keyboard, and verify it actually closed.
+   *
+   * `hideKeyboard` is unreliable on Android - over a web view it frequently
+   * resolves without doing anything, and the old code swallowed that silently.
+   * A keyboard left up keeps the form scrolled, so every element position read
+   * afterwards is wrong: on a card form that put the card number into the name
+   * field and left the submit button unreachable.
+   *
+   * BACK always closes an Android IME, but it navigates when no keyboard is
+   * open - so it is used only after confirming one IS open.
+   */
   async dismissKeyboard(): Promise<void> {
-    if (this.target !== "app" || !this.browser.hideKeyboard) return;
-    try {
-      await this.browser.hideKeyboard();
-    } catch {
-      // Nothing was open, or the driver refused - not an error.
+    if (this.target !== "app") return;
+
+    const isShown = async (): Promise<boolean> => {
+      if (!this.browser.isKeyboardShown) return false;
+      try {
+        return Boolean(await this.browser.isKeyboardShown());
+      } catch {
+        return false; // can't tell - treat as closed rather than risk a BACK
+      }
+    };
+
+    if (!(await isShown())) return;
+
+    if (this.browser.hideKeyboard) {
+      try {
+        await this.browser.hideKeyboard();
+      } catch {
+        /* fall through to BACK */
+      }
+    }
+    if (!(await isShown())) return;
+
+    // Still up: BACK is safe here, because the keyboard consumes it.
+    if (this.platform === "Android") {
+      await this.pressKey("BACK").catch(() => undefined);
     }
   }
 

@@ -63,7 +63,7 @@ export function baseCapabilities(device: DeviceConfig, app: AppConfig): Record<s
     "appium:platformVersion": device.osVersion,
     "appium:app": build.buildId,
     "appium:autoGrantPermissions": device.platform === "Android" ? true : undefined,
-    "appium:newCommandTimeout": 300,
+    "appium:newCommandTimeout": 1800,
   };
   if (device.platform === "Android" && build.appPackage) {
     caps["appium:appPackage"] = build.appPackage;
@@ -91,6 +91,6 @@ export function browserCapabilities(device: DeviceConfig): Record<string, unknow
     "appium:automationName": automationName,
     "appium:deviceName": device.deviceName,
     "appium:platformVersion": device.osVersion,
-    "appium:newCommandTimeout": 300,
+    "appium:newCommandTimeout": 1800,
   };
 }

@@ -52,7 +52,7 @@ export const sauceLabs: DeviceFarm = {
         platformName: device.platform,
         "appium:automationName": automationName,
         "appium:platformVersion": device.osVersion,
-        "appium:newCommandTimeout": 300,
+        "appium:newCommandTimeout": 1800,
         "sauce:options": sauceOptions,
       };
     } else {

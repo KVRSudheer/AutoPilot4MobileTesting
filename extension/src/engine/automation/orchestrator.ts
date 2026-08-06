@@ -24,9 +24,20 @@ const MAX_SEARCH_TRIES = 4;
 const VERIFY_ATTEMPTS = 12;
 const VERIFY_RETRY_MS = 5000;
 
-// How long to wait for a guarded screen (e.g. a dialog) before deciding a
-// condition is not met.
-const CONDITION_WAIT_MS = 5000;
+/*
+ * How long to wait for a guarded screen before deciding a condition is not met.
+ *
+ * These guards exist for dialogs that follow a network round-trip - "if the
+ * upsell appears, dismiss it" - so the wait has to outlast the request. At 5s
+ * this was a coin toss: the same script skipped the Xtra Savings pop-up on one
+ * run and handled it on the next, and a skipped block leaves the modal up so
+ * every later step fails against a covered screen.
+ *
+ * The cost of a longer wait is paid only when a condition genuinely does not
+ * match, so it is bounded and predictable; the cost of being too short is a
+ * run that fails for reasons that have nothing to do with the test.
+ */
+const CONDITION_WAIT_MS = 20_000;
 
 function labelForLog(el: UiElement): string {
   return (
@@ -228,7 +239,7 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
 
     // --- Pause requested between steps -------------------------------------
     if (control.pausePending) {
-      const choice = await pauseHere(session, step, [], "Paused by the operator.", control, emit);
+      const choice = await pauseHere(session, step, [], "Paused by the operator.", control, emit, driver);
       if (choice.kind === "stop") break;
     }
 
@@ -270,6 +281,7 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
         step.message || `Step ${i + 1} did not pass.`,
         control,
         emit,
+        driver,
       );
       if (choice.kind === "stop" || choice.kind === "skip") break;
       // Resolve against the exact list the operator picked from.
@@ -357,6 +369,19 @@ export async function runAutomation(args: RunArgs): Promise<SessionState> {
  * Hold the run at a pause point: publish the paused state (with the elements
  * on screen so the UI can offer a target) and wait for the operator.
  */
+/**
+ * How often to touch the device while a run is paused.
+ *
+ * Appium closes a session that receives no commands for `newCommandTimeout`.
+ * A person reading a candidate list and deciding takes minutes, so without
+ * this the session is reaped mid-decision and EVERY later step fails with
+ * "Unable to find the session info for particular sessionId" - which reads as
+ * a selector fault and is impossible to diagnose from the UI. Observed for
+ * real: a 7m42s pause killed the session, and the operator's retry then
+ * reported a plainly visible control as gone.
+ */
+const PAUSE_KEEPALIVE_MS = 60_000;
+
 async function pauseHere(
   session: SessionState,
   step: StepResult,
@@ -364,6 +389,7 @@ async function pauseHere(
   reason: string,
   control: ReturnType<typeof getRunControl>,
   emit: (event: RunEvent) => void,
+  driver?: DeviceDriver,
 ): Promise<RetryChoice> {
   const previous = session.status;
   session.status = "paused";
@@ -372,7 +398,19 @@ async function pauseHere(
   emit({ type: "paused", step, candidates, reason });
   emit({ type: "log", level: "warn", message: `⏸ ${reason} Waiting for the operator…`, at: Date.now() });
 
-  const choice = await control.waitForResume(candidates);
+  // Cheapest command that still counts as activity.
+  const keepalive = driver
+    ? setInterval(() => {
+        void driver.screenSignature().catch(() => undefined);
+      }, PAUSE_KEEPALIVE_MS)
+    : undefined;
+
+  let choice: RetryChoice;
+  try {
+    choice = await control.waitForResume(candidates);
+  } finally {
+    if (keepalive) clearInterval(keepalive);
+  }
 
   session.status = previous === "paused" ? "running" : previous;
   saveSession(session);
@@ -456,6 +494,47 @@ async function runStep(ctx: {
   // planning - otherwise the planner reasons about the dialog, not the app.
   elements = await clearPermissionDialogs(driver, elements, emit);
   let action = await planOnce(elements);
+
+  /*
+   * The planner reports "I cannot find the target" as an assertExists whose
+   * message says the control is missing. Taken at face value that turns an
+   * instruction into an observation: "Enter X into the Name on Card field"
+   * becomes "check the Name on Card field exists", fails, and never tries.
+   *
+   * The step text is unambiguous about intent, so restore it. Only assertExists
+   * is reconsidered, and only when the wording clearly asks for something else,
+   * so a real "Wait for X to appear" - where both agree - is untouched.
+   */
+  if (action.actionType === "assertExists" && !isWaitStep(step.description)) {
+    const intent = planActionHeuristic(step.description, elements);
+    /*
+     * The leading verb decides. "Tap 'Enter CVV' button" is a tap on a control
+     * whose LABEL happens to contain a typing word - read as a setText it would
+     * type the literal "Enter CVV" into whatever field it found, which is
+     * exactly what nearly happened on the card form.
+     */
+    if (/^\s*(tap|click|press|touch|select|choose|tick|check|toggle)\b/i.test(step.description)) {
+      intent.actionType = "tap";
+      intent.text = undefined;
+    }
+    if (intent.actionType !== "assertExists") {
+      emit({
+        type: "log",
+        level: "info",
+        message: `The planner reported the target missing; the step asks to ${
+          intent.actionType === "setText" ? "type" : intent.actionType
+        }, so that is what will be attempted.`,
+        at: Date.now(),
+      });
+      action = {
+        ...action,
+        actionType: intent.actionType,
+        text: intent.text ?? action.text,
+        direction: intent.direction ?? action.direction,
+        key: intent.key ?? action.key,
+      };
+    }
+  }
 
   // Operator override: keep the planned action type/text, but target exactly
   // the element they picked (resolved from the snapshot they were shown).
@@ -723,7 +802,17 @@ async function runStep(ctx: {
       !hasIdentifier(target) &&
       driver.target === "app"
     ) {
-      const centre = centreOf(target);
+      /*
+       * The soft keyboard resizes the form, so coordinates read while it was up
+       * point at the wrong row once it closes - on a card form that silently
+       * typed the card number into the name field. Close it FIRST, re-read the
+       * screen, and use the position the field has with the keyboard down.
+       */
+      await driver.dismissKeyboard().catch(() => undefined);
+      await delay(600);
+      const settled = await driver.captureElements().catch(() => elements);
+      const here = settled.find((e) => sameElement(e, target)) ?? target;
+      const centre = centreOf(here);
       if (centre) {
         const text = action.text ?? "";
         emit({
@@ -734,8 +823,12 @@ async function runStep(ctx: {
         });
         const t0 = Date.now();
         await driver.tapAt(centre.x, centre.y);
-        await delay(400);
+        await delay(500);
         await driver.typeIntoFocused(text);
+        // Leave the keyboard down so the next step sees the same layout this
+        // one measured, and so the button under the form stays reachable.
+        await driver.dismissKeyboard().catch(() => undefined);
+        await delay(400);
         step.status = "passed";
         step.outcome = {
           dispatched: true,
@@ -845,6 +938,18 @@ async function runStep(ctx: {
   // Non-targeted action (a real scroll/swipe gesture step, or pressKey).
   await executeAction(driver, action, undefined, step, emit);
   step.afterScreenshot = await driver.takeScreenshot();
+}
+
+/**
+ * Is this step genuinely an assertion - "wait for X", "verify X is displayed"?
+ *
+ * Distinguishes a step that MEANS to check from one the planner merely reported
+ * as unfindable, so only the latter has its action reconsidered.
+ */
+function isWaitStep(description: string): boolean {
+  return /\b(wait|verify|assert|confirm|check|should\s+(be|see)|is\s+displayed|appears?)\b/i.test(
+    description,
+  );
 }
 
 /** Can text be typed into this element? */
@@ -1030,6 +1135,17 @@ async function executeAction(
       await driver.setText(selector!, action.text ?? "");
       const want = action.text ?? "";
       const got = await driver.getFieldValue(selector!);
+      /*
+       * Close the soft keyboard after every entry.
+       *
+       * It covers the lower third of the screen, so whatever the next step
+       * needs - the button under the form, the next field down - is either
+       * hidden or reported at a position that shifts the moment it closes. On
+       * the card form that put the card number into the name field and left
+       * "Add Card" unreachable. The read-back above happens first, since the
+       * field has to be inspected while it is still focused.
+       */
+      await driver.dismissKeyboard().catch(() => undefined);
       const applied = Boolean(want) && got.includes(want);
       step.status = "passed";
       step.outcome = {
