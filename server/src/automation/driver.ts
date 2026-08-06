@@ -21,6 +21,9 @@ export interface DeviceDriver {
   // so any selector built for it would match many elements and hit the wrong
   // one; its position is unambiguous. Native only.
   tapAt(x: number, y: number): Promise<void>;
+  // Send text to whatever has focus, as key events. Pairs with tapAt to fill an
+  // input that no selector can single out. Native only.
+  typeIntoFocused(text: string): Promise<void>;
   setText(selector: MobileSelector, text: string): Promise<void>;
   swipe(direction: SwipeDirection): Promise<void>;
   pressKey(key: string): Promise<void>;
@@ -273,6 +276,18 @@ export class WebdriverDriver implements DeviceDriver {
     const element = await this.el(selector);
     await element.waitForExist({ timeout: 10_000 });
     await element.click();
+  }
+
+  /**
+   * Type into whatever currently has focus, as real key events.
+   *
+   * Needed for inputs that carry no id, description or text - web-view forms
+   * expose them that way - where no selector can single one out. Tapping the
+   * field focuses it, then the keystrokes land wherever the caret is.
+   */
+  async typeIntoFocused(text: string): Promise<void> {
+    if (!this.browser.keys) throw new Error("This driver cannot send raw key events.");
+    await this.browser.keys(text);
   }
 
   async tapAt(x: number, y: number): Promise<void> {

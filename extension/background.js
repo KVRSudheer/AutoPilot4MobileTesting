@@ -3221,6 +3221,17 @@ var WebdriverDriver = class {
     await element.waitForExist({ timeout: 1e4 });
     await element.click();
   }
+  /**
+   * Type into whatever currently has focus, as real key events.
+   *
+   * Needed for inputs that carry no id, description or text - web-view forms
+   * expose them that way - where no selector can single one out. Tapping the
+   * field focuses it, then the keystrokes land wherever the caret is.
+   */
+  async typeIntoFocused(text) {
+    if (!this.browser.keys) throw new Error("This driver cannot send raw key events.");
+    await this.browser.keys(text);
+  }
   async tapAt(x, y) {
     await this.browser.action("pointer", { parameters: { pointerType: "touch" } }).move({ duration: 0, x: Math.round(x), y: Math.round(y) }).down().pause(80).up().perform();
   }
@@ -3590,6 +3601,8 @@ var SimulatedDriver = class {
   }
   async tapAt(_x, _y) {
     this.advance();
+  }
+  async typeIntoFocused(_text) {
   }
   async setText(_selector, _text) {
   }
@@ -4610,16 +4623,53 @@ async function runStep(ctx) {
     }
   }
   if (isTargeted(action)) {
-    const target2 = resolvedTarget();
+    let target2 = resolvedTarget();
     if (!target2) {
       step.status = "needs-attention";
       step.message = "Could not confidently identify the element for this step - no on-screen element with a stable identifier matched it.";
       step.afterScreenshot = await driver.takeScreenshot();
       return;
     }
+    if (action.actionType === "setText" && !isEditableElement(target2)) {
+      const input = inputForLabel(target2, elements);
+      if (input) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `"${labelForLog(target2)}" is a label, not an input - typing into the field beside it instead.`,
+          at: Date.now()
+        });
+        target2 = input;
+      }
+    }
     const selector = buildSelector(target2, elements);
     step.element = target2;
     step.selector = selector;
+    if (action.actionType === "setText" && isEditableElement(target2) && !hasIdentifier(target2) && driver.target === "app") {
+      const centre = centreOf(target2);
+      if (centre) {
+        const text = action.text ?? "";
+        emit({
+          type: "log",
+          level: "info",
+          message: `This input carries no identifier, so focusing it at (${centre.x}, ${centre.y}) and typing "${text}".`,
+          at: Date.now()
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        await delay2(400);
+        await driver.typeIntoFocused(text);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "unverified",
+          detail: `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}".`,
+          durationMs: Date.now() - t0
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+    }
     if (forceElement && !await driver.exists(selector)) {
       const label = labelForLog(forceElement);
       const fresh = await driver.captureElements().catch(() => []);
@@ -4686,6 +4736,26 @@ async function runStep(ctx) {
   }
   await executeAction(driver, action, void 0, step, emit);
   step.afterScreenshot = await driver.takeScreenshot();
+}
+function isEditableElement(el) {
+  const tag = (el.tag || el.className || "").toLowerCase();
+  return tag.endsWith(".edittext") || tag === "input" || tag === "textarea" || /edit|textfield|searchfield|textbox/i.test(el.className || "");
+}
+function centreOf(el) {
+  return androidBoundsCenter(el.bounds);
+}
+function inputForLabel(label, all) {
+  const from = centreOf(label);
+  if (!from) return void 0;
+  let best;
+  for (const el of all) {
+    if (el.index === label.index || !isEditableElement(el)) continue;
+    const to = centreOf(el);
+    if (!to) continue;
+    const distance = Math.abs(to.y - from.y) * 3 + Math.abs(to.x - from.x);
+    if (!best || distance < best.distance) best = { el, distance };
+  }
+  return best?.el;
 }
 function sameElement(candidate, ref) {
   const same = (a, b) => (a ?? "") === (b ?? "");

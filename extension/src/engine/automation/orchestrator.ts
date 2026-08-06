@@ -637,7 +637,7 @@ async function runStep(ctx: {
   // best the planner could do is a tag-only guess, flag it - never tap a
   // random element (which silently does the wrong thing and gets stuck).
   if (isTargeted(action)) {
-    const target = resolvedTarget();
+    let target = resolvedTarget();
     if (!target) {
       step.status = "needs-attention";
       step.message =
@@ -645,9 +645,66 @@ async function runStep(ctx: {
       step.afterScreenshot = await driver.takeScreenshot();
       return;
     }
+    /*
+     * Typing needs an input, not a caption. If the target cannot take text,
+     * redirect to the field it labels - that is what "enter X into the Name on
+     * Card field" means, whether the caption was chosen by the planner (which
+     * only targets elements carrying an identifier, and a bare EditText carries
+     * none) or by an operator reading the same list.
+     */
+    if (action.actionType === "setText" && !isEditableElement(target)) {
+      const input = inputForLabel(target, elements);
+      if (input) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `"${labelForLog(target)}" is a label, not an input - typing into the field beside it instead.`,
+          at: Date.now(),
+        });
+        target = input;
+      }
+    }
+
     const selector = buildSelector(target, elements);
     step.element = target;
     step.selector = selector;
+
+    /*
+     * A field with no id, description or text - the shape web-view forms use -
+     * cannot be singled out by any selector: its class alone matches every
+     * other input on the form. Focus it by position, then type as key events,
+     * which land wherever the caret is.
+     */
+    if (
+      action.actionType === "setText" &&
+      isEditableElement(target) &&
+      !hasIdentifier(target) &&
+      driver.target === "app"
+    ) {
+      const centre = centreOf(target);
+      if (centre) {
+        const text = action.text ?? "";
+        emit({
+          type: "log",
+          level: "info",
+          message: `This input carries no identifier, so focusing it at (${centre.x}, ${centre.y}) and typing "${text}".`,
+          at: Date.now(),
+        });
+        const t0 = Date.now();
+        await driver.tapAt(centre.x, centre.y);
+        await delay(400);
+        await driver.typeIntoFocused(text);
+        step.status = "passed";
+        step.outcome = {
+          dispatched: true,
+          effect: "unverified",
+          detail: `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}".`,
+          durationMs: Date.now() - t0,
+        };
+        step.afterScreenshot = await driver.takeScreenshot();
+        return;
+      }
+    }
 
     /*
      * An operator-chosen target came from a snapshot taken when the run paused,
@@ -755,6 +812,50 @@ async function runStep(ctx: {
   // Non-targeted action (a real scroll/swipe gesture step, or pressKey).
   await executeAction(driver, action, undefined, step, emit);
   step.afterScreenshot = await driver.takeScreenshot();
+}
+
+/** Can text be typed into this element? */
+function isEditableElement(el: UiElement): boolean {
+  const tag = (el.tag || el.className || "").toLowerCase();
+  return (
+    tag.endsWith(".edittext") ||
+    tag === "input" ||
+    tag === "textarea" ||
+    /edit|textfield|searchfield|textbox/i.test(el.className || "")
+  );
+}
+
+function centreOf(el: UiElement): { x: number; y: number } | null {
+  return androidBoundsCenter(el.bounds);
+}
+
+/**
+ * The input a label belongs to.
+ *
+ * Web-view forms expose the value field as a bare EditText with no id, no
+ * description and no text, while the caption beside it is a separate View that
+ * DOES carry text. Targeting needs an identifier, so both the planner and an
+ * operator reading the candidate list land on the caption - and typing into a
+ * caption fails with "Cannot set the element to …".
+ *
+ * The field is whichever editable element sits closest to the label, measured
+ * between bounds centres. Order in the tree is not relied on: this app emits
+ * the input BEFORE its caption, other apps do the reverse.
+ */
+function inputForLabel(label: UiElement, all: UiElement[]): UiElement | undefined {
+  const from = centreOf(label);
+  if (!from) return undefined;
+  let best: { el: UiElement; distance: number } | undefined;
+  for (const el of all) {
+    if (el.index === label.index || !isEditableElement(el)) continue;
+    const to = centreOf(el);
+    if (!to) continue;
+    // Vertical distance dominates: a form is a column, and the caption for a
+    // field is far nearer to it than to the next field along.
+    const distance = Math.abs(to.y - from.y) * 3 + Math.abs(to.x - from.x);
+    if (!best || distance < best.distance) best = { el, distance };
+  }
+  return best?.el;
 }
 
 /**
