@@ -4632,6 +4632,20 @@ async function runStep(ctx) {
   }
   if (isTargeted(action)) {
     let target2 = resolvedTarget();
+    if (!target2 && action.actionType === "setText") {
+      const name = fieldNameFromStep(step.description);
+      const caption = name ? captionFor(name, elements) : void 0;
+      const input = caption ? inputForLabel(caption, elements) : void 0;
+      if (input) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `No input here carries an identifier, so "${name}" was matched to its caption and the field beside it will be used.`,
+          at: Date.now()
+        });
+        target2 = input;
+      }
+    }
     if (!target2) {
       step.status = "needs-attention";
       step.message = "Could not confidently identify the element for this step - no on-screen element with a stable identifier matched it.";
@@ -4751,6 +4765,28 @@ function isEditableElement(el) {
 }
 function centreOf(el) {
   return boundsCenter(el.bounds);
+}
+function fieldNameFromStep(description) {
+  const quoted = description.match(/into\s+(?:a\s+|the\s+)?['"]([^'"]+)['"]/i);
+  if (quoted) return quoted[1].trim();
+  const plain = description.match(/into\s+(?:a\s+|the\s+)?(.+?)\s+field\b/i);
+  if (plain) return plain[1].replace(/['"]/g, "").trim();
+  return void 0;
+}
+function captionFor(name, all) {
+  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const want = norm(name);
+  if (!want) return void 0;
+  let loose;
+  for (const el of all) {
+    for (const value of [el.text, el.contentDesc, el.accessibilityId]) {
+      if (!value) continue;
+      const got = norm(value);
+      if (got === want) return el;
+      if (!loose && (got.includes(want) || want.includes(got)) && got.length > 3) loose = el;
+    }
+  }
+  return loose;
 }
 function inputForLabel(label, all) {
   const from = centreOf(label);

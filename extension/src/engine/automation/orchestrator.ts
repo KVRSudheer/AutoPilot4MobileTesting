@@ -653,6 +653,33 @@ async function runStep(ctx: {
   // random element (which silently does the wrong thing and gets stuck).
   if (isTargeted(action)) {
     let target = resolvedTarget();
+
+    /*
+     * A form whose inputs carry no identifier defeats the planner: every field
+     * is an indistinguishable EditText, so none can be "confidently
+     * identified" and the step stalls. The step itself says which one it
+     * means - "into the 'Name on Card' field" - so find that caption on screen
+     * and take the field beside it.
+     *
+     * Without this, three card fields resolved to whatever was nearest after
+     * the last tap: the card number and the expiry both went into the SAME
+     * input, silently overwriting each other.
+     */
+    if (!target && action.actionType === "setText") {
+      const name = fieldNameFromStep(step.description);
+      const caption = name ? captionFor(name, elements) : undefined;
+      const input = caption ? inputForLabel(caption, elements) : undefined;
+      if (input) {
+        emit({
+          type: "log",
+          level: "info",
+          message: `No input here carries an identifier, so "${name}" was matched to its caption and the field beside it will be used.`,
+          at: Date.now(),
+        });
+        target = input;
+      }
+    }
+
     if (!target) {
       step.status = "needs-attention";
       step.message =
@@ -833,6 +860,41 @@ function isEditableElement(el: UiElement): boolean {
 
 function centreOf(el: UiElement): { x: number; y: number } | null {
   return boundsCenter(el.bounds);
+}
+
+/**
+ * The field name a step names: "Enter X into the 'Name on Card' field".
+ *
+ * On a form whose inputs carry no identifier, this is the ONLY thing that says
+ * which of them the step means - the inputs are mutually indistinguishable, so
+ * position alone would just pick the nearest one to wherever the last tap left
+ * the screen.
+ */
+function fieldNameFromStep(description: string): string | undefined {
+  const quoted = description.match(/into\s+(?:a\s+|the\s+)?['"]([^'"]+)['"]/i);
+  if (quoted) return quoted[1].trim();
+  const plain = description.match(/into\s+(?:a\s+|the\s+)?(.+?)\s+field\b/i);
+  if (plain) return plain[1].replace(/['"]/g, "").trim();
+  return undefined;
+}
+
+/** The on-screen caption for that field name, if one is showing. */
+function captionFor(name: string, all: UiElement[]): UiElement | undefined {
+  // Captions are commonly decorated - "Name on Card *", "Email Address," - so
+  // compare on letters and digits only.
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const want = norm(name);
+  if (!want) return undefined;
+  let loose: UiElement | undefined;
+  for (const el of all) {
+    for (const value of [el.text, el.contentDesc, el.accessibilityId]) {
+      if (!value) continue;
+      const got = norm(value);
+      if (got === want) return el;
+      if (!loose && (got.includes(want) || want.includes(got)) && got.length > 3) loose = el;
+    }
+  }
+  return loose;
 }
 
 /**
