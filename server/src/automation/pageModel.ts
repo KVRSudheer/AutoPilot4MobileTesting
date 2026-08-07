@@ -63,6 +63,24 @@ export function boundsCenter(bounds?: string): { x: number; y: number } | null {
 /** @deprecated Use {@link boundsCenter}, which also handles iOS. */
 export const androidBoundsCenter = boundsCenter;
 
+/** The element's box, in either platform's bounds format. */
+export function boundsBox(
+  bounds?: string,
+): { left: number; top: number; right: number; bottom: number } | null {
+  if (!bounds) return null;
+  const android = bounds.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+  if (android) {
+    const [, x1, y1, x2, y2] = android.map(Number);
+    return { left: x1, top: y1, right: x2, bottom: y2 };
+  }
+  const parts = bounds.split(",").map((p) => Number(p.trim()));
+  if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+    const [x, y, width, height] = parts;
+    return { left: x, top: y, right: x + width, bottom: y + height };
+  }
+  return null;
+}
+
 function isInteresting(el: Omit<UiElement, "index">): boolean {
   return Boolean(
     el.text ||

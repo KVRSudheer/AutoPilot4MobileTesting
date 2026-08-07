@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 import type { DeviceDriver } from "./driver.js";
 import { buildSelector } from "../workflow/selectors.js";
-import { boundsCenter } from "./pageModel.js";
+import { boundsBox, boundsCenter } from "./pageModel.js";
 import { planActionHeuristic, planActionWithLlm, screenMatches, verifyAssertion } from "../uipath/planner.js";
 import { getRunControl, type RetryChoice } from "./runControl.js";
 import type { ResolvedToken } from "../uipath/auth.js";
@@ -141,26 +141,39 @@ function startLiveFrames(
   driver: DeviceDriver,
   emit: (event: RunEvent) => void,
 ): () => void {
-  const intervalMs = env.farm.liveFrameMs;
-  if (!intervalMs) return () => undefined;
-  let busy = false;
+  const floorMs = env.farm.liveFrameMs;
+  if (!floorMs) return () => undefined;
   let stopped = false;
-  const timer = setInterval(() => {
-    if (busy || stopped) return;
-    busy = true;
-    void driver
-      .takeScreenshot()
-      .then((image) => {
-        if (!stopped) emit({ type: "frame", image, at: Date.now() });
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        busy = false;
-      });
-  }, intervalMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  /*
+   * Self-scheduling rather than a fixed interval.
+   *
+   * A screenshot competes with the automation for the same session, so a fixed
+   * tick either wastes calls the device cannot service - queueing behind the
+   * step commands and slowing the run - or crawls on a device that could go
+   * faster. Each frame is instead scheduled from how long the LAST one took:
+   * a device answering in 200ms streams smoothly, one taking 2s backs off on
+   * its own. `floorMs` keeps the fastest case from saturating the session.
+   */
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    const started = Date.now();
+    try {
+      const image = await driver.takeScreenshot();
+      if (!stopped) emit({ type: "frame", image, at: Date.now() });
+    } catch {
+      /* a frame is never worth failing a run over */
+    }
+    if (stopped) return;
+    const took = Date.now() - started;
+    timer = setTimeout(() => void tick(), Math.max(floorMs, took));
+  };
+  void tick();
+
   return () => {
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
   };
 }
 
@@ -829,11 +842,28 @@ async function runStep(ctx: {
         // one measured, and so the button under the form stays reachable.
         await driver.dismissKeyboard().catch(() => undefined);
         await delay(400);
+
+        /*
+         * Read the field back.
+         *
+         * Typing blind here reported "unverified" for every entry, so a form
+         * that silently took the wrong values looked identical to one that
+         * worked - and the only symptom was a submit button that did nothing.
+         * The element is re-found by identity, because the keyboard closing
+         * moves the form.
+         */
+        const after = await driver.captureElements().catch(() => [] as UiElement[]);
+        const landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        const ok = Boolean(text) && landed.includes(text);
         step.status = "passed";
         step.outcome = {
           dispatched: true,
-          effect: "unverified",
-          detail: `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}".`,
+          effect: ok ? "applied" : landed ? "no-change" : "unverified",
+          detail: ok
+            ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".`
+            : landed
+              ? `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}", but it contains "${landed}".`
+              : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
           durationMs: Date.now() - t0,
         };
         step.afterScreenshot = await driver.takeScreenshot();
@@ -926,8 +956,20 @@ async function runStep(ctx: {
       return;
     }
 
-    // Capture a screenshot cropped to just this element (the "field" image).
-    const shot = await driver.captureElementShot(selector);
+    /*
+     * The "field" image, only where it earns its cost.
+     *
+     * An element screenshot is a separate device round-trip - measured at 764ms
+     * on a real session - and it is taken BEFORE the action, so anything it
+     * perturbs, it perturbs at the worst moment. Its value is showing which
+     * field text went into; for a tap the full-screen before/after already
+     * tells the story. Skipping it for taps removes roughly half these calls,
+     * including the one on the card form's submit button.
+     */
+    const shot =
+      action.actionType === "setText" || action.actionType === "getText"
+        ? await driver.captureElementShot(selector).catch(() => "")
+        : "";
     if (shot) step.elementShot = shot;
 
     await executeAction(driver, action, selector, step, emit);
@@ -1016,17 +1058,38 @@ function captionFor(name: string, all: UiElement[]): UiElement | undefined {
  * the input BEFORE its caption, other apps do the reverse.
  */
 function inputForLabel(label: UiElement, all: UiElement[]): UiElement | undefined {
-  const from = centreOf(label);
-  if (!from) return undefined;
-  let best: { el: UiElement; distance: number } | undefined;
+  const cap = boundsBox(label.bounds);
+  if (!cap) return undefined;
+  const capY = (cap.top + cap.bottom) / 2;
+  const capX = (cap.left + cap.right) / 2;
+
+  /*
+   * A caption belongs to the field it sits ON or ABOVE - never one above it.
+   *
+   * These are outlined inputs whose label is notched into the top border, so
+   * the caption is only ~40px from its own field's centre AND close to the
+   * field above. Picking by nearest centre therefore resolved "Card Number"
+   * to the Name field, and once the keyboard scrolled the sheet those margins
+   * collapsed entirely: three fields were tapped within 200px of each other
+   * when the real spacing between them is about that much.
+   *
+   * Containment is unambiguous: score 0 when the caption lies inside the box,
+   * otherwise the gap down to the next field's top edge. Anything ending above
+   * the caption is rejected outright.
+   */
+  let best: { el: UiElement; score: number } | undefined;
   for (const el of all) {
     if (el.index === label.index || !isEditableElement(el)) continue;
-    const to = centreOf(el);
-    if (!to) continue;
-    // Vertical distance dominates: a form is a column, and the caption for a
-    // field is far nearer to it than to the next field along.
-    const distance = Math.abs(to.y - from.y) * 3 + Math.abs(to.x - from.x);
-    if (!best || distance < best.distance) best = { el, distance };
+    const box = boundsBox(el.bounds);
+    if (!box) continue;
+    // Same column: a field in another column is not this caption's field.
+    if (capX < box.left - 40 || capX > box.right + 40) continue;
+
+    let score: number;
+    if (capY >= box.top && capY <= box.bottom) score = 0;
+    else if (box.top > capY) score = box.top - capY;
+    else continue; // ends above the caption - cannot be its input
+    if (!best || score < best.score) best = { el, score };
   }
   return best?.el;
 }

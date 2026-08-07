@@ -36,9 +36,11 @@ export const env = {
     // client-side cap: every run in the batch starts at once. Set a positive
     // number only if you need to stay under a farm's concurrent-session limit.
     maxParallel: Math.max(0, Number(read("MAX_PARALLEL_SESSIONS", "0")) || 0),
-    // Live device-screen streaming: poll a screenshot every N ms during a run
-    // so the UI shows a near-live feed (not just per-step snapshots). 0 = off.
-    liveFrameMs: Math.max(0, Number(read("LIVE_FRAME_MS", "1500")) || 0),
+    // Live device-screen streaming: the FLOOR between frames. Each frame is
+    // scheduled from how long the previous one took, so a fast device streams
+    // smoothly and a slow one backs off instead of queueing behind the step
+    // commands. 0 = off.
+    liveFrameMs: Math.max(0, Number(read("LIVE_FRAME_MS", "700")) || 0),
   },
 };
 

@@ -27,7 +27,10 @@ export const env = {
     connectTimeoutMs: 300000,
     maxParallel: 0,
     // Live device-screen streaming cadence during a run (ms). 0 = off.
-    liveFrameMs: 1500,
+    // Floor between live frames; each is scheduled from how long the previous
+    // one took, so a fast device streams smoothly and a slow one backs off
+    // rather than queueing behind the step commands.
+    liveFrameMs: 700,
   },
 };
 

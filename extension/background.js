@@ -2416,7 +2416,10 @@ var env = {
     connectTimeoutMs: 3e5,
     maxParallel: 0,
     // Live device-screen streaming cadence during a run (ms). 0 = off.
-    liveFrameMs: 1500
+    // Floor between live frames; each is scheduled from how long the previous
+    // one took, so a fast device streams smoothly and a slow one backs off
+    // rather than queueing behind the step commands.
+    liveFrameMs: 700
   }
 };
 
@@ -2996,6 +2999,20 @@ function boundsCenter(bounds) {
   if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
     const [x, y, width, height] = parts;
     return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
+  }
+  return null;
+}
+function boundsBox(bounds) {
+  if (!bounds) return null;
+  const android = bounds.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+  if (android) {
+    const [, x1, y1, x2, y2] = android.map(Number);
+    return { left: x1, top: y1, right: x2, bottom: y2 };
+  }
+  const parts = bounds.split(",").map((p) => Number(p.trim()));
+  if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+    const [x, y, width, height] = parts;
+    return { left: x, top: y, right: x + width, bottom: y + height };
   }
   return null;
 }
@@ -3791,6 +3808,11 @@ function stableDescription(el) {
 function uiaLit(value) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
+function sharedWith(el, all, key) {
+  const value = key(el);
+  if (!all || !value) return 1;
+  return all.filter((e) => key(e) === value).length;
+}
 function buildAndroidSelector(el, all) {
   const cls = el.className ? `android:className='${esc2(el.className)}'` : "";
   const parts = (...attrs) => `<mbl ${attrs.filter(Boolean).join(" ")} />`;
@@ -3849,6 +3871,15 @@ function buildAndroidSelector(el, all) {
         locator: `new UiSelector().descriptionStartsWith("${uiaLit(stable)}")`
       };
     }
+    if (sharedWith(el, all, (e) => e.contentDesc) > 1 && el.className) {
+      return {
+        platform: "Android",
+        kind: "mobile",
+        mbl: parts(cls, `accessibilityId='${esc2(el.contentDesc)}'`),
+        strategy: "-android uiautomator",
+        locator: `new UiSelector().className("${uiaLit(el.className)}").description("${uiaLit(el.contentDesc)}")`
+      };
+    }
     return {
       platform: "Android",
       kind: "mobile",
@@ -3858,12 +3889,13 @@ function buildAndroidSelector(el, all) {
     };
   }
   if (el.text) {
+    const locator = sharedWith(el, all, (e) => e.text) > 1 && el.className ? `new UiSelector().className("${uiaLit(el.className)}").text("${uiaLit(el.text)}")` : `new UiSelector().text("${uiaLit(el.text)}")`;
     return {
       platform: "Android",
       kind: "mobile",
       mbl: parts(cls, `text='${esc2(el.text)}'`),
       strategy: "-android uiautomator",
-      locator: `new UiSelector().text("${uiaLit(el.text)}")`
+      locator
     };
   }
   return {
@@ -4307,22 +4339,26 @@ async function clearPermissionDialogs(driver, elements, emit, maxPrompts = 4) {
   return current;
 }
 function startLiveFrames(driver, emit) {
-  const intervalMs = env.farm.liveFrameMs;
-  if (!intervalMs) return () => void 0;
-  let busy = false;
+  const floorMs = env.farm.liveFrameMs;
+  if (!floorMs) return () => void 0;
   let stopped = false;
-  const timer = setInterval(() => {
-    if (busy || stopped) return;
-    busy = true;
-    void driver.takeScreenshot().then((image) => {
+  let timer;
+  const tick = async () => {
+    if (stopped) return;
+    const started = Date.now();
+    try {
+      const image = await driver.takeScreenshot();
       if (!stopped) emit({ type: "frame", image, at: Date.now() });
-    }).catch(() => void 0).finally(() => {
-      busy = false;
-    });
-  }, intervalMs);
+    } catch {
+    }
+    if (stopped) return;
+    const took = Date.now() - started;
+    timer = setTimeout(() => void tick(), Math.max(floorMs, took));
+  };
+  void tick();
   return () => {
     stopped = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
   };
 }
 async function runAutomation(args) {
@@ -4746,11 +4782,14 @@ async function runStep(ctx) {
         await driver.typeIntoFocused(text);
         await driver.dismissKeyboard().catch(() => void 0);
         await delay2(400);
+        const after = await driver.captureElements().catch(() => []);
+        const landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        const ok = Boolean(text) && landed.includes(text);
         step.status = "passed";
         step.outcome = {
           dispatched: true,
-          effect: "unverified",
-          detail: `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}".`,
+          effect: ok ? "applied" : landed ? "no-change" : "unverified",
+          detail: ok ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".` : landed ? `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}", but it contains "${landed}".` : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
           durationMs: Date.now() - t0
         };
         step.afterScreenshot = await driver.takeScreenshot();
@@ -4815,7 +4854,7 @@ async function runStep(ctx) {
       step.afterScreenshot = await driver.takeScreenshot();
       return;
     }
-    const shot = await driver.captureElementShot(selector);
+    const shot = action.actionType === "setText" || action.actionType === "getText" ? await driver.captureElementShot(selector).catch(() => "") : "";
     if (shot) step.elementShot = shot;
     await executeAction(driver, action, selector, step, emit);
     step.afterScreenshot = await driver.takeScreenshot();
@@ -4859,15 +4898,21 @@ function captionFor(name, all) {
   return loose;
 }
 function inputForLabel(label, all) {
-  const from = centreOf(label);
-  if (!from) return void 0;
+  const cap = boundsBox(label.bounds);
+  if (!cap) return void 0;
+  const capY = (cap.top + cap.bottom) / 2;
+  const capX = (cap.left + cap.right) / 2;
   let best;
   for (const el of all) {
     if (el.index === label.index || !isEditableElement(el)) continue;
-    const to = centreOf(el);
-    if (!to) continue;
-    const distance = Math.abs(to.y - from.y) * 3 + Math.abs(to.x - from.x);
-    if (!best || distance < best.distance) best = { el, distance };
+    const box = boundsBox(el.bounds);
+    if (!box) continue;
+    if (capX < box.left - 40 || capX > box.right + 40) continue;
+    let score;
+    if (capY >= box.top && capY <= box.bottom) score = 0;
+    else if (box.top > capY) score = box.top - capY;
+    else continue;
+    if (!best || score < best.score) best = { el, score };
   }
   return best?.el;
 }

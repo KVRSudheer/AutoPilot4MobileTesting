@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AppWindow,
   ArrowRight,
@@ -363,6 +363,43 @@ export function ConnectStep({
   // Use the tenant's actual working models once fetched; curated list as a
   // fallback (before validation, or if the probe returns nothing).
   const modelOptions = toModelOptions(models && models.length ? models : CURATED_MODELS);
+
+  /*
+   * Probe the tenant's models as soon as the credentials are complete, rather
+   * than waiting for someone to press Validate. The curated list is a
+   * stand-in - it cannot know which models a tenant actually has, so a model
+   * picked from it may not exist, and genuinely newer ones stay invisible.
+   *
+   * Keyed on the connection itself, so it runs once per set of credentials and
+   * not on every keystroke or when only the model changes.
+   */
+  const connectionKey = uipathConfigured
+    ? [u.baseUrl, u.orgName, u.tenantName, u.mode, u.mode === "bearer" ? u.bearerToken : u.clientId]
+        .join("|")
+    : "";
+  const probedKey = useRef<string>("");
+  useEffect(() => {
+    if (!connectionKey || probedKey.current === connectionKey) return;
+    probedKey.current = connectionKey;
+    let cancelled = false;
+    // Settle first: these fields are typed, and each keystroke changes the key.
+    const timer = setTimeout(() => {
+      setModelsLoading(true);
+      listUiPathModels(u)
+        .then((m) => {
+          if (!cancelled && m.length) setModels(m);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) setModelsLoading(false);
+        });
+    }, 900);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionKey]);
 
   const validateConnection = async () => {
     setValidating(true);

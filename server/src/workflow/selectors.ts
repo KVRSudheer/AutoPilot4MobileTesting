@@ -130,6 +130,29 @@ function uiaLit(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/**
+ * How many elements on this screen share `el`'s value for `key`.
+ *
+ * Used to tighten a selector ONLY where it is genuinely ambiguous. A labelled
+ * control is commonly a Button wrapping a TextView that repeats the same text
+ * or description, so matching on that value alone returns both and the driver
+ * acts on whichever comes first - which on the card form meant a 764ms element
+ * screenshot of the wrong node and a collapsed sheet.
+ *
+ * Adding the class unconditionally would tighten selectors that work today, so
+ * it is added only when the count proves it is needed. Without the surrounding
+ * screen (`all`), nothing can be proven, so nothing is changed.
+ */
+function sharedWith(
+  el: UiElement,
+  all: UiElement[] | undefined,
+  key: (e: UiElement) => string | undefined,
+): number {
+  const value = key(el);
+  if (!all || !value) return 1;
+  return all.filter((e) => key(e) === value).length;
+}
+
 function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector {
   /*
    * Selector policy.
@@ -230,6 +253,19 @@ function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector 
         locator: `new UiSelector().descriptionStartsWith("${uiaLit(stable)}")`,
       };
     }
+    // A control and the view inside it often carry the SAME description, so
+    // `~desc` returns both and the driver acts on whichever comes first. Only
+    // when that is actually the case is the class added, which needs the
+    // uiautomator strategy - the accessibility-id strategy cannot express one.
+    if (sharedWith(el, all, (e) => e.contentDesc) > 1 && el.className) {
+      return {
+        platform: "Android",
+        kind: "mobile",
+        mbl: parts(cls, `accessibilityId='${esc(el.contentDesc)}'`),
+        strategy: "-android uiautomator",
+        locator: `new UiSelector().className("${uiaLit(el.className)}").description("${uiaLit(el.contentDesc)}")`,
+      };
+    }
     return {
       platform: "Android",
       kind: "mobile",
@@ -239,12 +275,17 @@ function buildAndroidSelector(el: UiElement, all?: UiElement[]): MobileSelector 
     };
   }
   if (el.text) {
+    // Add the class only when the text alone is ambiguous - see sharedWith.
+    const locator =
+      sharedWith(el, all, (e) => e.text) > 1 && el.className
+        ? `new UiSelector().className("${uiaLit(el.className)}").text("${uiaLit(el.text)}")`
+        : `new UiSelector().text("${uiaLit(el.text)}")`;
     return {
       platform: "Android",
       kind: "mobile",
       mbl: parts(cls, `text='${esc(el.text)}'`),
       strategy: "-android uiautomator",
-      locator: `new UiSelector().text("${uiaLit(el.text)}")`,
+      locator,
     };
   }
   // Nothing but a class name. This matches many elements, so the orchestrator
