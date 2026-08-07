@@ -852,18 +852,86 @@ async function runStep(ctx: {
          * The element is re-found by identity, because the keyboard closing
          * moves the form.
          */
-        const after = await driver.captureElements().catch(() => [] as UiElement[]);
-        const landed = after.find((e) => sameElement(e, here))?.text ?? "";
-        const ok = Boolean(text) && landed.includes(text);
+        let after = await driver.captureElements().catch(() => [] as UiElement[]);
+        let landed = after.find((e) => sameElement(e, here))?.text ?? "";
+
+        /*
+         * A field that formats its own value will not echo back what was sent,
+         * and that is not a failure - so compare on the characters that carry
+         * meaning and ignore the punctuation it chooses for itself.
+         */
+        const meaningful = (s: string) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
+
+        /*
+         * Retype without the separators when the value did not land.
+         *
+         * A date or card field puts up a NUMERIC keypad - it has no "/" key at
+         * all - and inserts its own separator as you type. Sending "01/28"
+         * therefore pushes a character the keyboard cannot produce into a field
+         * that is mid-rewrite, and the result was "02/8": the "1" and the "/"
+         * both lost, and the form rejected it as not MM/YY while every other
+         * value was correct.
+         *
+         * Sending just "0128" lets the field format it, and one character at a
+         * time keeps pace with that formatting. Only reached when the read-back
+         * proves the first attempt failed, so ordinary fields stay fast.
+         */
+        const digitsOnly = meaningful(text);
+        if (text && !meaningful(landed).includes(digitsOnly) && digitsOnly !== text) {
+          emit({
+            type: "log",
+            level: "info",
+            message: `The field shows "${landed}" rather than "${text}" - it formats its own value, so re-entering "${digitsOnly}" one character at a time and letting it add the separators.`,
+            at: Date.now(),
+          });
+          await driver.tapAt(centre.x, centre.y);
+          await delay(300);
+          for (let i = 0; i < landed.length + 4; i += 1) {
+            await driver.pressKey("DEL").catch(() => undefined);
+          }
+          await driver.typeIntoFocused(digitsOnly, 140);
+          await driver.dismissKeyboard().catch(() => undefined);
+          await delay(400);
+          after = await driver.captureElements().catch(() => [] as UiElement[]);
+          landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        }
+
+        const ok = Boolean(text) && meaningful(landed).includes(digitsOnly);
+
+        /*
+         * After the retry, a field that still holds the wrong value is a
+         * FAILURE - not a pass with a note.
+         *
+         * Reporting this as passed is what let a run carry on for another
+         * twenty steps against a form that could never submit: the expiry read
+         * "02/8", the step went green, and the real cause only surfaced from a
+         * screenshot. Failing here stops the run where the problem is.
+         *
+         * Only when the field can actually be READ is this provable. A field
+         * that reports nothing back stays "unverified" rather than being failed
+         * on an absence of evidence.
+         */
+        if (!ok && landed) {
+          step.status = "needs-attention";
+          step.message = `The field contains "${landed}" but the step asked for "${text}" - re-entering it did not take.`;
+          step.outcome = {
+            dispatched: true,
+            effect: "no-change",
+            detail: step.message,
+            durationMs: Date.now() - t0,
+          };
+          emit({ type: "log", level: "warn", message: step.message, at: Date.now() });
+          step.afterScreenshot = await driver.takeScreenshot();
+          return;
+        }
+
         step.status = "passed";
         step.outcome = {
           dispatched: true,
-          effect: ok ? "applied" : landed ? "no-change" : "unverified",
+          effect: ok ? "applied" : "unverified",
           detail: ok
             ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".`
-            : landed
-              ? `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}", but it contains "${landed}".`
-              : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
+            : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
           durationMs: Date.now() - t0,
         };
         step.afterScreenshot = await driver.takeScreenshot();

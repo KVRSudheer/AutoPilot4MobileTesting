@@ -3252,9 +3252,16 @@ var WebdriverDriver = class {
    * expose them that way - where no selector can single one out. Tapping the
    * field focuses it, then the keystrokes land wherever the caret is.
    */
-  async typeIntoFocused(text) {
+  async typeIntoFocused(text, perCharDelayMs = 0) {
     if (!this.browser.keys) throw new Error("This driver cannot send raw key events.");
-    await this.browser.keys(text);
+    if (perCharDelayMs <= 0) {
+      await this.browser.keys(text);
+      return;
+    }
+    for (const ch of text) {
+      await this.browser.keys(ch);
+      await new Promise((r) => setTimeout(r, perCharDelayMs));
+    }
   }
   async tapAt(x, y) {
     await this.browser.action("pointer", { parameters: { pointerType: "touch" } }).move({ duration: 0, x: Math.round(x), y: Math.round(y) }).down().pause(80).up().perform();
@@ -4782,14 +4789,47 @@ async function runStep(ctx) {
         await driver.typeIntoFocused(text);
         await driver.dismissKeyboard().catch(() => void 0);
         await delay2(400);
-        const after = await driver.captureElements().catch(() => []);
-        const landed = after.find((e) => sameElement(e, here))?.text ?? "";
-        const ok = Boolean(text) && landed.includes(text);
+        let after = await driver.captureElements().catch(() => []);
+        let landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        const meaningful = (s) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
+        const digitsOnly = meaningful(text);
+        if (text && !meaningful(landed).includes(digitsOnly) && digitsOnly !== text) {
+          emit({
+            type: "log",
+            level: "info",
+            message: `The field shows "${landed}" rather than "${text}" - it formats its own value, so re-entering "${digitsOnly}" one character at a time and letting it add the separators.`,
+            at: Date.now()
+          });
+          await driver.tapAt(centre.x, centre.y);
+          await delay2(300);
+          for (let i = 0; i < landed.length + 4; i += 1) {
+            await driver.pressKey("DEL").catch(() => void 0);
+          }
+          await driver.typeIntoFocused(digitsOnly, 140);
+          await driver.dismissKeyboard().catch(() => void 0);
+          await delay2(400);
+          after = await driver.captureElements().catch(() => []);
+          landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        }
+        const ok = Boolean(text) && meaningful(landed).includes(digitsOnly);
+        if (!ok && landed) {
+          step.status = "needs-attention";
+          step.message = `The field contains "${landed}" but the step asked for "${text}" - re-entering it did not take.`;
+          step.outcome = {
+            dispatched: true,
+            effect: "no-change",
+            detail: step.message,
+            durationMs: Date.now() - t0
+          };
+          emit({ type: "log", level: "warn", message: step.message, at: Date.now() });
+          step.afterScreenshot = await driver.takeScreenshot();
+          return;
+        }
         step.status = "passed";
         step.outcome = {
           dispatched: true,
-          effect: ok ? "applied" : landed ? "no-change" : "unverified",
-          detail: ok ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".` : landed ? `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}", but it contains "${landed}".` : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
+          effect: ok ? "applied" : "unverified",
+          detail: ok ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".` : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
           durationMs: Date.now() - t0
         };
         step.afterScreenshot = await driver.takeScreenshot();

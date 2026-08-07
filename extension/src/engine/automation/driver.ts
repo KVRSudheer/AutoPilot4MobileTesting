@@ -22,8 +22,9 @@ export interface DeviceDriver {
   // one; its position is unambiguous. Native only.
   tapAt(x: number, y: number): Promise<void>;
   // Send text to whatever has focus, as key events. Pairs with tapAt to fill an
-  // input that no selector can single out. Native only.
-  typeIntoFocused(text: string): Promise<void>;
+  // input that no selector can single out. Native only. `perCharDelayMs` types
+  // one character at a time, for fields that reformat as you type.
+  typeIntoFocused(text: string, perCharDelayMs?: number): Promise<void>;
   setText(selector: MobileSelector, text: string): Promise<void>;
   swipe(direction: SwipeDirection): Promise<void>;
   pressKey(key: string): Promise<void>;
@@ -286,9 +287,26 @@ export class WebdriverDriver implements DeviceDriver {
    * expose them that way - where no selector can single one out. Tapping the
    * field focuses it, then the keystrokes land wherever the caret is.
    */
-  async typeIntoFocused(text: string): Promise<void> {
+  async typeIntoFocused(text: string, perCharDelayMs = 0): Promise<void> {
     if (!this.browser.keys) throw new Error("This driver cannot send raw key events.");
-    await this.browser.keys(text);
+    if (perCharDelayMs <= 0) {
+      await this.browser.keys(text);
+      return;
+    }
+    /*
+     * One character at a time, with a pause between.
+     *
+     * A field that reformats as you type - an expiry that inserts its own "/",
+     * a card number that groups digits - rewrites its contents after each
+     * keystroke. Sent as one burst, keys land while that rewrite is in flight
+     * and characters are dropped: "01/28" arrived as "02/8" and the form
+     * rejected it as not MM/YY. Slower is only used as a retry, so the cost is
+     * paid on the fields that actually need it.
+     */
+    for (const ch of text) {
+      await this.browser.keys(ch);
+      await new Promise((r) => setTimeout(r, perCharDelayMs));
+    }
   }
 
   async tapAt(x: number, y: number): Promise<void> {
