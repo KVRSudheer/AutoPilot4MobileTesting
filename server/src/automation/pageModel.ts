@@ -83,7 +83,8 @@ export function boundsBox(
 
 function isInteresting(el: Omit<UiElement, "index">): boolean {
   return Boolean(
-    el.text ||
+    el.hint ||
+      el.text ||
       el.contentDesc ||
       el.resourceId ||
       el.accessibilityId ||
@@ -121,6 +122,10 @@ export function parsePageSource(xml: string, platform: Platform): UiElement[] {
           contentDesc: attr(node, "content-desc"),
           resourceId: attr(node, "resource-id"),
           accessibilityId: attr(node, "content-desc"), // a11y id == content-desc on Android
+          // The grey prompt an empty input shows. Web-view forms routinely give
+          // their fields no id, description or text, leaving this as the only
+          // thing that says what the field is for.
+          hint: attr(node, "hint"),
           bounds: attr(node, "bounds"),
           clickable: asBool(attr(node, "clickable")),
           enabled: asBool(attr(node, "enabled")),

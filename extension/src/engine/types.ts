@@ -131,6 +131,9 @@ export interface UiElement {
   inputType?: string; // <input type=...>
   ariaLabel?: string;
   placeholder?: string;
+  // Android EditText hint - the grey prompt shown while a field is empty.
+  // Often the ONLY stable identifier a web-view input has.
+  hint?: string;
   href?: string;
   role?: string;
   cssPath?: string;

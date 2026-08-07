@@ -759,16 +759,53 @@ async function runStep(ctx: {
      */
     if (!target && action.actionType === "setText") {
       const name = fieldNameFromStep(step.description);
-      const caption = name ? captionFor(name, elements) : undefined;
-      const input = caption ? inputForLabel(caption, elements) : undefined;
-      if (input) {
+
+      /*
+       * Read the field out of the page source, in the order the source itself
+       * makes reliable.
+       *
+       * 1. The input's OWN prompt. An empty field still advertises what it is -
+       *    "Enter a 12 to 19 digit Card Number", "MM/YY" - which Android
+       *    reports as `hint`. That is the field describing itself, so nothing
+       *    beats it, and it needs no hop through a neighbouring element.
+       * 2. Otherwise the caption beside it, matched by position.
+       *
+       * Both come from the same page source; neither guesses from coordinates.
+       */
+      const byOwnPrompt = name
+        ? elements.find(
+            (e) =>
+              isEditableElement(e) &&
+              [e.hint, e.contentDesc, e.accessibilityId, e.placeholder].some(
+                (v) => v && labelMatches(v, name),
+              ),
+          )
+        : undefined;
+
+      if (byOwnPrompt) {
         emit({
           type: "log",
           level: "info",
-          message: `No input here carries an identifier, so "${name}" was matched to its caption and the field beside it will be used.`,
+          message: `"${name}" matched this input's own prompt ("${
+            byOwnPrompt.hint ?? byOwnPrompt.contentDesc ?? byOwnPrompt.placeholder
+          }").`,
           at: Date.now(),
         });
-        target = input;
+        target = byOwnPrompt;
+      } else {
+        const caption = name ? captionFor(name, elements) : undefined;
+        const input = caption ? inputForLabel(caption, elements) : undefined;
+        if (input) {
+          emit({
+            type: "log",
+            level: "info",
+            message: `No input advertises "${name}", so it was matched to the caption "${
+              caption?.text ?? caption?.contentDesc
+            }" and the field beside it will be used.`,
+            at: Date.now(),
+          });
+          target = input;
+        }
       }
     }
 
@@ -849,12 +886,33 @@ async function runStep(ctx: {
          * its position among the inputs. Appium then sets the value in a single
          * call, with no keyboard involved and nothing to race.
          */
+        const xp = (v: string) => (v.includes("'") ? `concat('${v.split("'").join("',\"'\",'")}')` : `'${v}'`);
         const sameKind = elements.filter(
           (e) => isEditableElement(e) && e.className === here.className,
         );
         const instance = sameKind.findIndex((e) => e.index === here.index);
+
+        /*
+         * Prefer the field's OWN attribute over its position.
+         *
+         * An empty input still shows a prompt - "MM/YY", "Name as displayed on
+         * card" - and Android exposes that as `hint`. That is a real property of
+         * the field: it survives the form reordering, another field being added
+         * above it, or the list being rendered in a different order. An instance
+         * index survives none of those, so it is only the fallback.
+         */
+        const byHint: MobileSelector | null = here.hint
+          ? {
+              platform: driver.platform,
+              kind: "mobile",
+              mbl: `<mbl android:className='${here.className}' hint='${here.hint}' />`,
+              strategy: "xpath",
+              locator: `//${here.className}[@hint=${xp(here.hint)}]`,
+            }
+          : null;
         const byInstance: MobileSelector | null =
-          instance >= 0
+          byHint ??
+          (instance >= 0
             ? {
                 platform: driver.platform,
                 kind: "mobile",
@@ -862,7 +920,7 @@ async function runStep(ctx: {
                 strategy: "-android uiautomator",
                 locator: `new UiSelector().className("${here.className.replace(/"/g, '\\"')}").instance(${instance})`,
               }
-            : null;
+            : null);
 
         const meaningful = (s: string) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
         const digitsOnly = meaningful(text);
@@ -886,7 +944,9 @@ async function runStep(ctx: {
           emit({
             type: "log",
             level: "info",
-            message: `This input carries no identifier, so addressing it as ${here.className} #${instance + 1} and setting its value to "${text}".`,
+            message: byHint
+              ? `This input carries no id or label, but its prompt is "${here.hint}" - addressing it by that and setting its value to "${text}".`
+              : `This input carries no identifier, so addressing it as ${here.className} #${instance + 1} and setting its value to "${text}".`,
             at: Date.now(),
           });
           try {
@@ -894,7 +954,7 @@ async function runStep(ctx: {
             await driver.dismissKeyboard().catch(() => undefined);
             await delay(400);
             landed = await readFieldAt();
-            how = `${here.className} #${instance + 1}`;
+            how = byHint ? `its prompt "${here.hint}"` : `${here.className} #${instance + 1}`;
             step.selector = byInstance;
           } catch (error) {
             emit({
@@ -1114,6 +1174,22 @@ function fieldNameFromStep(description: string): string | undefined {
   const plain = description.match(/into\s+(?:a\s+|the\s+)?(.+?)\s+field\b/i);
   if (plain) return plain[1].replace(/['"]/g, "").trim();
   return undefined;
+}
+
+/**
+ * Does this on-screen string name the field a step is asking for?
+ *
+ * Compared on letters and digits only, because the two are rarely written the
+ * same way: a caption is decorated ("Name on Card *", "Email Address,") and a
+ * prompt is a whole sentence ("Enter a 12 to 19 digit Card Number") that
+ * CONTAINS the field's name rather than equalling it.
+ */
+function labelMatches(value: string, name: string): boolean {
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const a = norm(value);
+  const b = norm(name);
+  if (!a || !b) return false;
+  return a === b || (b.length > 3 && a.includes(b));
 }
 
 /** The on-screen caption for that field name, if one is showing. */

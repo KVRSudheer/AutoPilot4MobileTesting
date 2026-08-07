@@ -3018,7 +3018,7 @@ function boundsBox(bounds) {
 }
 function isInteresting(el) {
   return Boolean(
-    el.text || el.contentDesc || el.resourceId || el.accessibilityId || el.name || el.clickable
+    el.hint || el.text || el.contentDesc || el.resourceId || el.accessibilityId || el.name || el.clickable
   );
 }
 function parsePageSource(xml, platform) {
@@ -3043,6 +3043,10 @@ function parsePageSource(xml, platform) {
           resourceId: attr(node, "resource-id"),
           accessibilityId: attr(node, "content-desc"),
           // a11y id == content-desc on Android
+          // The grey prompt an empty input shows. Web-view forms routinely give
+          // their fields no id, description or text, leaving this as the only
+          // thing that says what the field is for.
+          hint: attr(node, "hint"),
           bounds: attr(node, "bounds"),
           clickable: asBool(attr(node, "clickable")),
           enabled: asBool(attr(node, "enabled")),
@@ -4736,16 +4740,31 @@ async function runStep(ctx) {
     let target2 = resolvedTarget();
     if (!target2 && action.actionType === "setText") {
       const name = fieldNameFromStep(step.description);
-      const caption = name ? captionFor(name, elements) : void 0;
-      const input = caption ? inputForLabel(caption, elements) : void 0;
-      if (input) {
+      const byOwnPrompt = name ? elements.find(
+        (e) => isEditableElement(e) && [e.hint, e.contentDesc, e.accessibilityId, e.placeholder].some(
+          (v) => v && labelMatches(v, name)
+        )
+      ) : void 0;
+      if (byOwnPrompt) {
         emit({
           type: "log",
           level: "info",
-          message: `No input here carries an identifier, so "${name}" was matched to its caption and the field beside it will be used.`,
+          message: `"${name}" matched this input's own prompt ("${byOwnPrompt.hint ?? byOwnPrompt.contentDesc ?? byOwnPrompt.placeholder}").`,
           at: Date.now()
         });
-        target2 = input;
+        target2 = byOwnPrompt;
+      } else {
+        const caption = name ? captionFor(name, elements) : void 0;
+        const input = caption ? inputForLabel(caption, elements) : void 0;
+        if (input) {
+          emit({
+            type: "log",
+            level: "info",
+            message: `No input advertises "${name}", so it was matched to the caption "${caption?.text ?? caption?.contentDesc}" and the field beside it will be used.`,
+            at: Date.now()
+          });
+          target2 = input;
+        }
       }
     }
     if (!target2) {
@@ -4784,17 +4803,25 @@ async function runStep(ctx) {
           at: Date.now()
         });
         const t0 = Date.now();
+        const xp = (v) => v.includes("'") ? `concat('${v.split("'").join(`',"'",'`)}')` : `'${v}'`;
         const sameKind = elements.filter(
           (e) => isEditableElement(e) && e.className === here.className
         );
         const instance = sameKind.findIndex((e) => e.index === here.index);
-        const byInstance = instance >= 0 ? {
+        const byHint = here.hint ? {
+          platform: driver.platform,
+          kind: "mobile",
+          mbl: `<mbl android:className='${here.className}' hint='${here.hint}' />`,
+          strategy: "xpath",
+          locator: `//${here.className}[@hint=${xp(here.hint)}]`
+        } : null;
+        const byInstance = byHint ?? (instance >= 0 ? {
           platform: driver.platform,
           kind: "mobile",
           mbl: `<mbl android:className='${here.className}' idx='${instance + 1}' />`,
           strategy: "-android uiautomator",
           locator: `new UiSelector().className("${here.className.replace(/"/g, '\\"')}").instance(${instance})`
-        } : null;
+        } : null);
         const meaningful = (s) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
         const digitsOnly = meaningful(text);
         const readFieldAt = async () => {
@@ -4814,7 +4841,7 @@ async function runStep(ctx) {
           emit({
             type: "log",
             level: "info",
-            message: `This input carries no identifier, so addressing it as ${here.className} #${instance + 1} and setting its value to "${text}".`,
+            message: byHint ? `This input carries no id or label, but its prompt is "${here.hint}" - addressing it by that and setting its value to "${text}".` : `This input carries no identifier, so addressing it as ${here.className} #${instance + 1} and setting its value to "${text}".`,
             at: Date.now()
           });
           try {
@@ -4822,7 +4849,7 @@ async function runStep(ctx) {
             await driver.dismissKeyboard().catch(() => void 0);
             await delay2(400);
             landed = await readFieldAt();
-            how = `${here.className} #${instance + 1}`;
+            how = byHint ? `its prompt "${here.hint}"` : `${here.className} #${instance + 1}`;
             step.selector = byInstance;
           } catch (error) {
             emit({
@@ -4955,6 +4982,13 @@ function fieldNameFromStep(description) {
   const plain = description.match(/into\s+(?:a\s+|the\s+)?(.+?)\s+field\b/i);
   if (plain) return plain[1].replace(/['"]/g, "").trim();
   return void 0;
+}
+function labelMatches(value, name) {
+  const norm = (v) => v.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const a = norm(value);
+  const b = norm(name);
+  if (!a || !b) return false;
+  return a === b || b.length > 3 && a.includes(b);
 }
 function captionFor(name, all) {
   const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
