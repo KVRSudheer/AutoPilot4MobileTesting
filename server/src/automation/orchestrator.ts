@@ -835,85 +835,108 @@ async function runStep(ctx: {
           at: Date.now(),
         });
         const t0 = Date.now();
-        await driver.tapAt(centre.x, centre.y);
-        await delay(500);
-        await driver.typeIntoFocused(text);
-        // Leave the keyboard down so the next step sees the same layout this
-        // one measured, and so the button under the form stays reachable.
-        await driver.dismissKeyboard().catch(() => undefined);
-        await delay(400);
 
         /*
-         * Read the field back.
+         * Address the field as an ELEMENT, not a screen position.
          *
-         * Typing blind here reported "unverified" for every entry, so a form
-         * that silently took the wrong values looked identical to one that
-         * worked - and the only symptom was a submit button that did nothing.
-         * The element is re-found by identity, because the keyboard closing
-         * moves the form.
+         * Tapping coordinates and then sending key events is racy by nature:
+         * the keystrokes go through the IME and compete with the web view's own
+         * input handling, so they arrive out of order - "Thabo Venter" landed as
+         * "trvn obah t" - and no amount of delay tuning makes that reliable.
+         *
+         * These fields carry no identifier, but they do not need one: the
+         * caption already told us WHICH field this is, so it can be addressed by
+         * its position among the inputs. Appium then sets the value in a single
+         * call, with no keyboard involved and nothing to race.
          */
-        let after = await driver.captureElements().catch(() => [] as UiElement[]);
-        let landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        const sameKind = elements.filter(
+          (e) => isEditableElement(e) && e.className === here.className,
+        );
+        const instance = sameKind.findIndex((e) => e.index === here.index);
+        const byInstance: MobileSelector | null =
+          instance >= 0
+            ? {
+                platform: driver.platform,
+                kind: "mobile",
+                mbl: `<mbl android:className='${here.className}' idx='${instance + 1}' />`,
+                strategy: "-android uiautomator",
+                locator: `new UiSelector().className("${here.className.replace(/"/g, '\\"')}").instance(${instance})`,
+              }
+            : null;
 
-        /*
-         * A field that formats its own value will not echo back what was sent,
-         * and that is not a failure - so compare on the characters that carry
-         * meaning and ignore the punctuation it chooses for itself.
-         */
         const meaningful = (s: string) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
-
-        /*
-         * Retype without the separators when the value did not land.
-         *
-         * A date or card field puts up a NUMERIC keypad - it has no "/" key at
-         * all - and inserts its own separator as you type. Sending "01/28"
-         * therefore pushes a character the keyboard cannot produce into a field
-         * that is mid-rewrite, and the result was "02/8": the "1" and the "/"
-         * both lost, and the form rejected it as not MM/YY while every other
-         * value was correct.
-         *
-         * Sending just "0128" lets the field format it, and one character at a
-         * time keeps pace with that formatting. Only reached when the read-back
-         * proves the first attempt failed, so ordinary fields stay fast.
-         */
         const digitsOnly = meaningful(text);
-        if (text && !meaningful(landed).includes(digitsOnly) && digitsOnly !== text) {
+
+        /** Read the field back by position - the tap point stays inside it. */
+        const readFieldAt = async (): Promise<string> => {
+          const fresh = await driver.captureElements().catch(() => [] as UiElement[]);
+          const hit = fresh.find((e) => {
+            if (!isEditableElement(e)) return false;
+            const b = boundsBox(e.bounds);
+            return Boolean(
+              b && centre.x >= b.left && centre.x <= b.right && centre.y >= b.top && centre.y <= b.bottom,
+            );
+          });
+          return hit?.text ?? "";
+        };
+
+        let landed = "";
+        let how = "";
+        if (byInstance) {
           emit({
             type: "log",
             level: "info",
-            message: `The field shows "${landed}" rather than "${text}" - it formats its own value, so re-entering "${digitsOnly}" one character at a time and letting it add the separators.`,
+            message: `This input carries no identifier, so addressing it as ${here.className} #${instance + 1} and setting its value to "${text}".`,
             at: Date.now(),
           });
+          try {
+            await driver.setText(byInstance, text);
+            await driver.dismissKeyboard().catch(() => undefined);
+            await delay(400);
+            landed = await readFieldAt();
+            how = `${here.className} #${instance + 1}`;
+            step.selector = byInstance;
+          } catch (error) {
+            emit({
+              type: "log",
+              level: "warn",
+              message: `Setting the value directly failed (${
+                error instanceof Error ? error.message : String(error)
+              }); falling back to typing at its position.`,
+              at: Date.now(),
+            });
+          }
+        }
+
+        // Fallback: focus by position and type, one character at a time.
+        if (!meaningful(landed).includes(digitsOnly)) {
           await driver.tapAt(centre.x, centre.y);
-          await delay(300);
+          await delay(400);
           for (let i = 0; i < landed.length + 4; i += 1) {
             await driver.pressKey("DEL").catch(() => undefined);
           }
-          await driver.typeIntoFocused(digitsOnly, 140);
+          // Send only the characters the field's own keypad can produce; a
+          // date or card field raises a NUMERIC keypad with no "/" key and
+          // inserts its separators itself.
+          await driver.typeIntoFocused(digitsOnly, 120);
           await driver.dismissKeyboard().catch(() => undefined);
           await delay(400);
-          after = await driver.captureElements().catch(() => [] as UiElement[]);
-          landed = after.find((e) => sameElement(e, here))?.text ?? "";
+          landed = await readFieldAt();
+          how = `position (${centre.x}, ${centre.y})`;
         }
 
         const ok = Boolean(text) && meaningful(landed).includes(digitsOnly);
 
         /*
-         * After the retry, a field that still holds the wrong value is a
-         * FAILURE - not a pass with a note.
-         *
-         * Reporting this as passed is what let a run carry on for another
-         * twenty steps against a form that could never submit: the expiry read
-         * "02/8", the step went green, and the real cause only surfaced from a
-         * screenshot. Failing here stops the run where the problem is.
-         *
-         * Only when the field can actually be READ is this provable. A field
-         * that reports nothing back stays "unverified" rather than being failed
-         * on an absence of evidence.
+         * A field that still holds the wrong value after the retry is a
+         * FAILURE, not a pass with a note. Reporting it as passed is what let a
+         * run continue for twenty steps against a form that could never submit.
+         * Only provable where the field can be read; one that reports nothing
+         * stays unverified rather than being failed on absent evidence.
          */
         if (!ok && landed) {
           step.status = "needs-attention";
-          step.message = `The field contains "${landed}" but the step asked for "${text}" - re-entering it did not take.`;
+          step.message = `The field contains "${landed}" but the step asked for "${text}" - setting it directly and re-typing both failed.`;
           step.outcome = {
             dispatched: true,
             effect: "no-change",
@@ -930,8 +953,8 @@ async function runStep(ctx: {
           dispatched: true,
           effect: ok ? "applied" : "unverified",
           detail: ok
-            ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".`
-            : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
+            ? `Set via ${how}; the field now contains "${landed}".`
+            : `Set via ${how} - the field could not be read back.`,
           durationMs: Date.now() - t0,
         };
         step.afterScreenshot = await driver.takeScreenshot();

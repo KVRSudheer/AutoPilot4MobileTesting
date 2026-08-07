@@ -4784,37 +4784,71 @@ async function runStep(ctx) {
           at: Date.now()
         });
         const t0 = Date.now();
-        await driver.tapAt(centre.x, centre.y);
-        await delay2(500);
-        await driver.typeIntoFocused(text);
-        await driver.dismissKeyboard().catch(() => void 0);
-        await delay2(400);
-        let after = await driver.captureElements().catch(() => []);
-        let landed = after.find((e) => sameElement(e, here))?.text ?? "";
+        const sameKind = elements.filter(
+          (e) => isEditableElement(e) && e.className === here.className
+        );
+        const instance = sameKind.findIndex((e) => e.index === here.index);
+        const byInstance = instance >= 0 ? {
+          platform: driver.platform,
+          kind: "mobile",
+          mbl: `<mbl android:className='${here.className}' idx='${instance + 1}' />`,
+          strategy: "-android uiautomator",
+          locator: `new UiSelector().className("${here.className.replace(/"/g, '\\"')}").instance(${instance})`
+        } : null;
         const meaningful = (s) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
         const digitsOnly = meaningful(text);
-        if (text && !meaningful(landed).includes(digitsOnly) && digitsOnly !== text) {
+        const readFieldAt = async () => {
+          const fresh = await driver.captureElements().catch(() => []);
+          const hit = fresh.find((e) => {
+            if (!isEditableElement(e)) return false;
+            const b = boundsBox(e.bounds);
+            return Boolean(
+              b && centre.x >= b.left && centre.x <= b.right && centre.y >= b.top && centre.y <= b.bottom
+            );
+          });
+          return hit?.text ?? "";
+        };
+        let landed = "";
+        let how = "";
+        if (byInstance) {
           emit({
             type: "log",
             level: "info",
-            message: `The field shows "${landed}" rather than "${text}" - it formats its own value, so re-entering "${digitsOnly}" one character at a time and letting it add the separators.`,
+            message: `This input carries no identifier, so addressing it as ${here.className} #${instance + 1} and setting its value to "${text}".`,
             at: Date.now()
           });
+          try {
+            await driver.setText(byInstance, text);
+            await driver.dismissKeyboard().catch(() => void 0);
+            await delay2(400);
+            landed = await readFieldAt();
+            how = `${here.className} #${instance + 1}`;
+            step.selector = byInstance;
+          } catch (error) {
+            emit({
+              type: "log",
+              level: "warn",
+              message: `Setting the value directly failed (${error instanceof Error ? error.message : String(error)}); falling back to typing at its position.`,
+              at: Date.now()
+            });
+          }
+        }
+        if (!meaningful(landed).includes(digitsOnly)) {
           await driver.tapAt(centre.x, centre.y);
-          await delay2(300);
+          await delay2(400);
           for (let i = 0; i < landed.length + 4; i += 1) {
             await driver.pressKey("DEL").catch(() => void 0);
           }
-          await driver.typeIntoFocused(digitsOnly, 140);
+          await driver.typeIntoFocused(digitsOnly, 120);
           await driver.dismissKeyboard().catch(() => void 0);
           await delay2(400);
-          after = await driver.captureElements().catch(() => []);
-          landed = after.find((e) => sameElement(e, here))?.text ?? "";
+          landed = await readFieldAt();
+          how = `position (${centre.x}, ${centre.y})`;
         }
         const ok = Boolean(text) && meaningful(landed).includes(digitsOnly);
         if (!ok && landed) {
           step.status = "needs-attention";
-          step.message = `The field contains "${landed}" but the step asked for "${text}" - re-entering it did not take.`;
+          step.message = `The field contains "${landed}" but the step asked for "${text}" - setting it directly and re-typing both failed.`;
           step.outcome = {
             dispatched: true,
             effect: "no-change",
@@ -4829,7 +4863,7 @@ async function runStep(ctx) {
         step.outcome = {
           dispatched: true,
           effect: ok ? "applied" : "unverified",
-          detail: ok ? `Focused the field at (${centre.x}, ${centre.y}); it now contains "${landed}".` : `Focused the field at (${centre.x}, ${centre.y}) and typed "${text}" - the field could not be read back.`,
+          detail: ok ? `Set via ${how}; the field now contains "${landed}".` : `Set via ${how} - the field could not be read back.`,
           durationMs: Date.now() - t0
         };
         step.afterScreenshot = await driver.takeScreenshot();
